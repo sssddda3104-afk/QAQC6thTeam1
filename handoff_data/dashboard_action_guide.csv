@@ -1,0 +1,4 @@
+﻿Rule_ID,Variable,Condition,Status,Dashboard_Message,Recommended_Check,Evidence_Type,Expert_Review_Required
+PH_HIGH,pH,pH > 2.20,주의/이상,pH 상한 이탈이 확인되었습니다.,"pH 측정값, 설정값 및 약액 공급 상태를 확인하세요.",display_rule_not_causal,True
+TEMP_LOW,온도,Temp < 40,주의/이상,온도 하한 이탈이 확인되었습니다.,온도 측정값 및 가열·온도 제어 상태를 확인하세요.,display_rule_not_causal,True
+VOLTAGE_LOW,전압,Voltage < 15,주의/이상,전압 하한 이탈이 확인되었습니다.,전압 측정값 및 전원·접촉 상태를 확인하세요.,display_rule_not_causal,True

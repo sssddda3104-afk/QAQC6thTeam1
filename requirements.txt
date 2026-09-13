@@ -1,0 +1,9 @@
+streamlit>=1.56
+pandas
+numpy
+xgboost
+joblib
+torch
+torchvision
+Pillow
+grad-cam

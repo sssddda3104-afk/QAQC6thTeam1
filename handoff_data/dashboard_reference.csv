@@ -1,0 +1,4 @@
+﻿Sensor,Normal_Mean,Normal_Std,Normal_Q05,Normal_Q25,Normal_Q50,Normal_Q75,Normal_Q95,Display_Limit_Direction,Display_Limit_Value,Unit,Model_Ref_Lower_Final,Model_Ref_Upper_Final
+pH,2.0081424211185896,0.12275156178237777,1.83,1.91,2.01,2.1,2.18,upper,2.2,,1.83,2.18
+Temp,42.455356254926926,1.4662286402346398,40.256,41.3,42.48,43.65,44.71,lower,40.0,℃,40.26,44.71
+Voltage,17.4543961352657,1.4567305381516098,15.25,16.31,17.48,18.64,19.69,lower,15.0,V,15.25,19.69

@@ -1,0 +1,17 @@
+팀원 전달용 QUICK START
+
+1) 과거 LOT 화면
+   - dashboard_lot_summary.csv의 Final_OOF_* 사용
+   - dashboard_progress_checkpoint.csv의 EW_OOF_* 사용
+   - 그래프는 dashboard_sensor_timeseries.csv 사용
+
+2) 신규/실시간 LOT
+   - code/dashboard_inference.py import
+   - current_snapshot(current_lot_df)
+   - predict_early_warning(current_lot_df)
+   - 공정 완료 후 predict_final_lot(full_lot_df)
+
+3) Early Warning 주의
+   - 최종 채택 모델 아님
+   - UI 표현: AI 참고 위험도 / 참고 경보
+   - 금지 표현: 확정 불량 판정 / 실제 불량 확률

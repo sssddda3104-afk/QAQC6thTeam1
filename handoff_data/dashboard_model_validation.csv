@@ -1,0 +1,4 @@
+﻿Model_Type,Candidate,Progress,Target_FPR,PR_AUC_Mean,PR_AUC_SD,Recall_Mean,Recall_Min,FPR_Mean,Decision,Dashboard_Usage
+Final_Defect,XGBoost 12F + SMOTE10,100,0.01,0.8037,0.0234,0.8222,0.7778,0.0126,채택,완료 LOT 불량 위험 판정
+Early_Warning,Prefix 12F,75,0.03,0.6968,0.0365,0.76,0.6667,0.0282,미채택,공정 중 AI 참고 위험도
+Early_Warning,Prefix 12F,80,0.03,0.6791,0.0508,0.7556,0.6667,0.03,미채택,공정 중 AI 참고 위험도
