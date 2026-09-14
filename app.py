@@ -7,6 +7,7 @@ import model_data as md
 import chart_helpers as ch
 import image_data as imgd
 import ai_report
+import insight_analysis as ia
 import dashboard_ui as ui
 
 st.set_page_config(page_title="크로메이트 도금 공정 모니터링", layout="wide")
@@ -663,17 +664,26 @@ if st.session_state.page == "🧪 센서 데이터":
                 shap_contrib = None
                 try:
                     shap_contrib = md.get_shap_contributions(lot_df)
+                    cross = ia.control_crosscheck(shap_contrib, lot_ts, ref_stats)
+                    st.markdown("**핵심 요약**")
+                    st.markdown(ia.direction_summary(shap_contrib))
                     st.altair_chart(ch.shap_contribution_chart(shap_contrib), width="stretch")
-                    st.caption("빨강 = 불량 쪽으로 민 피처 · 파랑 = 정상 쪽으로 민 피처 (절댓값 큰 상위 6개)")
-                    _notice(_shap_insight(shap_contrib), kind="info")
-                    with st.expander("SHAP 상세 수치와 읽는 법", expanded=False):
-                        st.markdown("**읽는 순서:** 영향이 큰 항목을 확인하고 → 측정값과 관리도를 대조한 뒤 → 작업·설정 변경 기록을 확인합니다. 같은 변수라도 최솟값·변동 폭·이탈률은 서로 다른 특성을 설명합니다.")
+                    st.caption("빨강 = 불량 방향 · 파랑 = 정상 방향 · 막대가 길수록 모델 점수에 미친 영향이 큽니다.")
+                    st.markdown("**이렇게 해석할 수 있습니다**")
+                    for explanation in ia.evidence_explanations(shap_contrib, cross):
+                        st.markdown(explanation)
+                    st.caption("모델의 판단 근거를 설명하는 것이며, 불량 원인이나 조정 효과를 확정하는 분석은 아닙니다.")
+                    with st.expander("상세 수치 · 계산 기준", expanded=False):
+                        st.caption("SHAP 이탈률은 모델 학습 설정의 상한 초과 비율이며 %로 환산했습니다. 화면의 팀 관리이탈 기준과 다를 수 있습니다.")
+                        st.markdown("**관리도 교차 확인**")
+                        st.dataframe(cross, hide_index=True, width="stretch")
+                        st.caption("선택 LOT 전체 구간을 관리도와 동일한 평균·표준편차로 계산합니다. 조기 경고에서는 ±3σ 초과점을 제외했습니다. 변수별 모델 근거는 절댓값이 가장 큰 피처입니다.")
+                        st.markdown("**전체 SHAP 수치**")
                         details = shap_contrib[["label", "value", "shap"]].copy()
-                        details["영향 방향"] = details["shap"].map(lambda x: "불량 방향" if x > 0 else ("정상 방향" if x < 0 else "영향 없음"))
-                        details = details.loc[details["shap"].abs().sort_values(ascending=False).index]
-                        details = details.rename(columns={"label":"판정 근거 항목", "value":"측정 통계값", "shap":"SHAP 기여도"})
+                        details = details.rename(columns={"label":"판정 근거 항목", "value":"피처 값(모델 입력 단위)", "shap":"SHAP 기여도"})
                         st.dataframe(details, hide_index=True, width="stretch")
-                        st.caption("표에는 전체 항목을, 위 그래프에는 영향이 큰 상위 6개를 표시합니다. 기여도는 모델 출력 척도이며 백분율이 아닙니다.")
+                        st.caption("전체 피처를 표시하며, 기여도는 백분율이 아닙니다. SHAP 영향 순위는 점검 우선순위와 다릅니다.")
+                        st.caption("SHAP은 배포된 XGBoost 모델의 설명입니다. 상단 모델 판정은 별도 OOF 검증 결과이므로 해당 OOF 판정의 직접 설명은 아닙니다.")
                 except Exception:
                     _notice(
                         "SHAP 인사이트를 계산할 모델 파일을 찾을 수 없어 이 섹션은 건너뜁니다.",
@@ -683,23 +693,23 @@ if st.session_state.page == "🧪 센서 데이터":
 
                 lot_nelson = md.get_lot_nelson_violations(lot_ts)
                 st.markdown('<div class="section-gap" aria-hidden="true"></div>', unsafe_allow_html=True)
-                st.subheader("AI 현장 점검 보고서")
+                st.subheader("AI 자동 리포트")
                 report_end = st.session_state.get("period", (None, df["date"].max()))[1]
                 report_start = pd.Timestamp(report_end).date() - pd.Timedelta(days=6)
                 st.caption(f"최근 7일: {report_start} ~ {report_end} · 선택 LOT: {lot_label}")
-                report_key = f"ai_operator_v2_{report_end}_{lot_date}_{lot_slot}"
-                if st.button("AI 점검 보고서 생성", key="ai_operator_generate"):
-                    with st.spinner("현장 점검 보고서 작성 중..."):
+                report_key = f"ai_operator_v6_{report_end}_{lot_date}_{lot_slot}"
+                if st.button("AI 자동 리포트", key="ai_operator_generate"):
+                    with st.spinner("AI 자동 리포트 작성 중..."):
                         try:
-                            context = ai_report.build_operator_context(timeseries, report_end, lot_ts)
+                            context = ai_report.build_operator_context(timeseries, report_end, lot_ts, ref_stats)
                             recent_nelson = md.get_period_nelson_violations(timeseries, pd.Timestamp(report_start).date(), report_end)
-                            st.session_state[report_key] = ai_report.generate_operator_report(lot_label, lot_nelson, final_oof, context, recent_nelson)
+                            st.session_state[report_key] = ai_report.generate_operator_report(lot_label, lot_nelson, final_oof, context, recent_nelson, shap_contrib)
                         except Exception:
                             st.error("보고서를 생성하지 못했습니다. API 키와 연결 상태를 확인한 뒤 다시 시도해주세요.")
                 if st.session_state.get(report_key):
                     st.markdown(st.session_state[report_key])
                 else:
-                    st.caption("최근 7일 변수 현황·일별 흐름·선택 LOT 비교·우선 확인·변수별 점검 및 조정 검토·인수인계를 종합한 보고서를 생성합니다.")
+                    st.caption("이번 LOT에서 반복된 문제와 먼저 확인할 기록을 쉬운 말로 정리합니다. 최근 7일 현황은 참고 근거로 함께 제공합니다.")
                 st.caption("AI 보고서는 점검 참고용입니다. 실제 조치는 현장 절차와 담당자 확인에 따릅니다.")
             else:
                 st.warning("해당 LOT의 시계열 데이터가 없습니다.")
