@@ -471,6 +471,48 @@ def variable_control_chart(
     return chart.properties(height=320, title=title)
 
 
+def shap_contribution_chart(contrib: pd.DataFrame, top_n: int = 6) -> alt.Chart:
+    """SHAP 이탈진단 패널 — 선택 LOT에 대해 채택 모델(XGBoost 12F)이 어느 피처를
+    근거로 판정했는지 가로 막대로 표시. 빨강(양수)=불량 쪽으로 민 피처,
+    파랑(음수)=정상 쪽으로 민 피처("위험"이라는 말을 붙이면 정상 쪽까지 위험하게
+    읽혀 어색하다는 피드백으로 뗌, 2026-09). |기여도| 큰 순서로 top_n개만 표시
+    (12개 전부 보여주면 인사이트 규칙기반 목록과 중복감이 커서 요약만, 2026-09).
+    model_data.get_shap_contributions()가 이미 |shap| 내림차순으로 정렬해 준다."""
+    data = contrib.head(top_n).copy()
+    data["방향"] = data["shap"].map(lambda v: "불량 쪽" if v > 0 else "정상 쪽")
+    order = data["label"].tolist()
+
+    chart = (
+        alt.Chart(data)
+        .mark_bar()
+        .encode(
+            x=alt.X("shap:Q", title="SHAP 기여도 (모델 판정에 미친 영향)"),
+            # 이전엔 properties(height=28*n+40)로 전체 높이를 어림잡아 계산했는데,
+            # 실제 렌더링에서 범례+축 영역을 뺀 실질 막대 영역이 너무 좁아져서
+            # Vega가 라벨 겹침으로 판단해 절반가량을 자동으로 숨겨버리는 문제가
+            # 있었음(막대는 6개 다 그려지는데 라벨은 3개만 보임, 실사용자 리포트로
+            # 발견, 2026-09). alt.Step으로 "행 하나당 고정 픽셀"을 직접 지정해서
+            # 범례/축과 무관하게 막대 영역 자체가 항상 충분히 확보되게 함.
+            y=alt.Y(
+                "label:N", title=None, sort=order,
+                axis=alt.Axis(labelOverlap=False),
+            ),
+            color=alt.Color(
+                "방향:N",
+                scale=alt.Scale(domain=["불량 쪽", "정상 쪽"], range=["#ff4b4b", "#5b9bd5"]),
+                legend=alt.Legend(title=None, orient="top"),
+            ),
+            tooltip=[
+                alt.Tooltip("label:N", title="피처"),
+                alt.Tooltip("value:Q", title="값", format=".3f"),
+                alt.Tooltip("shap:Q", title="SHAP 기여도", format=".3f"),
+            ],
+        )
+        .properties(height=alt.Step(32))
+    )
+    return chart
+
+
 def confidence_distribution_chart(df: pd.DataFrame, category: str) -> alt.Chart:
     """이미지 데이터 페이지 — 카테고리(정상/불량)별 판정 확률(불량일 확률) 분포.
     "확신도"는 실제로는 모델이 예측한 클래스의 확률값일 뿐인데 사람에게 과도한

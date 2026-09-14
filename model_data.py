@@ -6,17 +6,51 @@
 """
 
 from pathlib import Path
+import json
+import joblib
+import numpy as np
 import pandas as pd
+import streamlit as st
+from xgboost import XGBClassifier
+import shap
 
 BASE = Path(__file__).parent / "handoff_data"
+SHAP_MODEL_DIR = Path(__file__).parent / "chromate_dashboard_handoff" / "models"
 
 PROGRESS_LEVELS = [20, 30, 40, 50, 60, 65, 70, 75, 80, 100]
+
+# SHAP 인사이트 패널용 — 파생변수 표에서 쓰는 한글 이름과 맞춤(표와 나란히 읽히도록).
+SHAP_FEATURE_LABELS = {
+    "pH_std": "pH 표준편차", "Temp_std": "온도 표준편차", "Voltage_std": "전압 표준편차",
+    "pH_min": "pH 최솟값", "Temp_min": "온도 최솟값", "Voltage_min": "전압 최솟값",
+    "pH_IQR": "pH IQR", "Temp_IQR": "온도 IQR", "Voltage_IQR": "전압 IQR",
+    "pH_exc_high_rate": "pH 이탈률", "Temp_exc_high_rate": "온도 이탈률",
+    "Voltage_exc_high_rate": "전압 이탈률",
+}
 
 
 def load_lot_summary() -> pd.DataFrame:
     df = pd.read_csv(BASE / "dashboard_lot_summary.csv")
     df["Date"] = pd.to_datetime(df["Date"]).dt.date
     return df
+
+
+@st.cache_data
+def get_defect_lean_reference() -> dict:
+    """파생변수 표 색칠용 — 726 LOT 전체(팀 핸드오프 dashboard_lot_summary.csv)에서
+    정상(Defect=0)/불량(Defect=1) 그룹별 중앙값을 계산해, "이 값이 정상 쪽에 가까운지
+    불량 쪽에 가까운지"를 판단할 기준점으로 쓴다(요청 반영, 2026-09 — 기존엔 현재
+    표에 보이는 3개 행(pH/온도/전압)끼리만 비교하는 상대 히트맵이었는데, 정상/불량
+    이라는 절대적 기준이 있는 두 점 사이의 위치로 바꿔달라는 요청).
+    반환: {"pH_std": (정상 중앙값, 불량 중앙값), ...} — 12개 피처 전부."""
+    lot_summary = load_lot_summary()
+    features = [
+        "pH_std", "Temp_std", "Voltage_std",
+        "pH_min", "Temp_min", "Voltage_min",
+        "pH_IQR", "Temp_IQR", "Voltage_IQR",
+    ]
+    med = lot_summary.groupby("Defect")[features].median()
+    return {feat: (float(med.loc[0, feat]), float(med.loc[1, feat])) for feat in features}
 
 
 def load_model_validation() -> pd.DataFrame:
@@ -175,6 +209,59 @@ def get_out_of_control_rate(ts: pd.DataFrame, start_d, end_d) -> dict:
     return rates
 
 
+def get_period_nelson_violations(ts: pd.DataFrame, start_d, end_d) -> dict:
+    """선택 기간 전체의 pH/온도/전압 넬슨룰 위반 "건수"까지 포함한 버전
+    — get_out_of_control_rate()는 비율(%)만 반환하는데, AI 자동 리포트의
+    "관리도 요약" 섹션에서 선택 LOT 건수(get_lot_nelson_violations)와 나란히
+    비교하려면 같은 형식(rule1_count/rule5_count/total_points)이 필요해서
+    추가함(2026-09). 판정 로직은 get_out_of_control_rate와 동일(새 로직 아님).
+    반환: {"pH": {"rule1_count":.., "rule5_count":.., "total_points":.., "rate":..}, ...}"""
+    from chart_helpers import _nelson_rule1, _nelson_rule5
+
+    period = ts[(ts["Date"] >= start_d) & (ts["Date"] <= end_d)]
+    col_map = {"pH": "pH_Z_Display", "온도": "Temp_Z_Display", "전압": "Voltage_Z_Display"}
+    out = {}
+    for label, col in col_map.items():
+        total = 0
+        rule1_count = 0
+        rule5_count = 0
+        for _, g in period.groupby(["Date", "Lot"]):
+            z = g.sort_values("Measurement_No")[col]
+            rule1 = _nelson_rule1(z)
+            rule5 = _nelson_rule5(z)
+            rule1_count += int(rule1.sum())
+            rule5_count += int((rule5 & ~rule1).sum())
+            total += len(z)
+        rate = round(100 * (rule1_count + rule5_count) / total, 1) if total else None
+        out[label] = {
+            "rule1_count": rule1_count, "rule5_count": rule5_count,
+            "total_points": total, "rate": rate,
+        }
+    return out
+
+
+def get_lot_nelson_violations(lot_ts: pd.DataFrame) -> dict:
+    """선택 LOT 하나의 관리도 기준 넬슨룰 위반 건수(Rule 1=±3σ 초과, Rule 5=조기경고)
+    — chart_helpers의 관리도·get_out_of_control_rate와 동일한 판정 로직
+    (_nelson_rule1/5)을 그대로 재사용해 개수만 집계한다(새 판정 로직 아님, 계산
+    일관성 보장). AI 자동 리포트의 "관리도 요약" 섹션 입력으로 씀(2026-09).
+    반환: {"pH": {"rule1_count":.., "rule5_count":.., "total_points":..}, ...}"""
+    from chart_helpers import _nelson_rule1, _nelson_rule5
+
+    col_map = {"pH": "pH_Z_Display", "온도": "Temp_Z_Display", "전압": "Voltage_Z_Display"}
+    out = {}
+    for label, col in col_map.items():
+        z = lot_ts[col]
+        rule1 = _nelson_rule1(z)
+        rule5 = _nelson_rule5(z)
+        out[label] = {
+            "rule1_count": int(rule1.sum()),
+            "rule5_count": int((rule5 & ~rule1).sum()),
+            "total_points": int(len(z)),
+        }
+    return out
+
+
 def get_recent_defect_rate_trend(df: pd.DataFrame, end_d) -> dict:
     """선택한 조회 기간의 마지막 7일 vs 그 직전 7일의 불량률(%) 비교.
     처음엔 데이터 전체의 최신 날짜를 기준으로 고정 계산했는데, 사용자가 사이드바에서
@@ -200,3 +287,53 @@ def get_recent_defect_rate_trend(df: pd.DataFrame, end_d) -> dict:
     prev_rate = _defect_rate(prev)
     delta = round(cur_rate - prev_rate, 1) if cur_rate is not None and prev_rate is not None else None
     return {"현재": cur_rate, "이전": prev_rate, "변화": delta}
+
+
+@st.cache_resource
+def _load_shap_artifacts():
+    """SHAP 이탈진단용 실제 모델 아티팩트(채택 모델: XGBoost 12F).
+    chromate_dashboard_handoff/models 안의 원본 팀원 핸드오프 산출물을 그대로 씀 —
+    "모델 정보" 카드가 참조하는 dashboard_model_validation.csv와 같은 모델이다.
+    st.cache_resource로 세션당 1회만 로드(모델 로드+TreeExplainer 생성 비용 있음)."""
+    fc = json.loads((SHAP_MODEL_DIR / "final_config.json").read_text(encoding="utf-8"))
+    fp = joblib.load(SHAP_MODEL_DIR / "final_preprocess.joblib")
+    fm = XGBClassifier()
+    fm.load_model(str(SHAP_MODEL_DIR / "final_defect_xgb.json"))
+    explainer = shap.TreeExplainer(fm)
+    return fc, fp, explainer
+
+
+def get_shap_contributions(lot_df: pd.DataFrame) -> pd.DataFrame:
+    """선택한 LOT 하나에 대해, 채택 모델(XGBoost 12F)이 실제로 어느 피처를 근거로
+    판정했는지 SHAP 기여도로 계산한다. 인사이트 섹션의 규칙기반(이탈률 기준) 설명과는
+    별개 패널로 병행 표시하기 위한 것(대체 아님, 2026-09 요청 반영).
+
+    피처 계산식은 팀 핸드오프의 chromate_dashboard_handoff/code/dashboard_inference.py
+    predict_final_lot()과 동일하게 맞춤(모델 자체의 excursion_reference 기준 사용 —
+    화면 표시용 파생변수 표의 기준(2.20/40/15)과는 다를 수 있음, 학습 당시 기준 그대로).
+
+    반환: feature(원 이름)/label(한글)/value(피처 값)/shap(기여도, 값이 클수록
+    "불량" 쪽으로, 작을수록(음수) "정상" 쪽으로 민 정도) — |shap| 내림차순.
+    """
+    fc, fp, explainer = _load_shap_artifacts()
+    x = lot_df.rename(columns={"ph": "pH", "temp": "Temp", "voltage": "Voltage"})
+    ref = fc["excursion_reference"]
+    feats = {}
+    for s in ["pH", "Temp", "Voltage"]:
+        v = x[s].to_numpy(float)
+        feats[f"{s}_std"] = float(np.std(v, ddof=1))
+        feats[f"{s}_min"] = float(v.min())
+        feats[f"{s}_IQR"] = float(np.percentile(v, 75) - np.percentile(v, 25))
+        feats[f"{s}_exc_high_rate"] = float(np.mean(v > ref[s]["upper"]))
+
+    z = pd.DataFrame([feats])[fc["features"]].fillna(fp["median"])
+    z_scaled = fp["scaler"].transform(z.to_numpy(np.float32))
+    shap_vals = np.asarray(explainer.shap_values(z_scaled)).reshape(-1)
+
+    out = pd.DataFrame({
+        "feature": fc["features"],
+        "label": [SHAP_FEATURE_LABELS.get(f, f) for f in fc["features"]],
+        "value": [feats[f] for f in fc["features"]],
+        "shap": shap_vals,
+    })
+    return out.reindex(out["shap"].abs().sort_values(ascending=False).index).reset_index(drop=True)
