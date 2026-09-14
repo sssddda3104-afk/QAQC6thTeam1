@@ -1,114 +1,17 @@
 import streamlit as st
 import pandas as pd
 import hashlib
+import re
 import sensor_data as sd
 import model_data as md
 import chart_helpers as ch
 import image_data as imgd
 import ai_report
+import dashboard_ui as ui
 
 st.set_page_config(page_title="크로메이트 도금 공정 모니터링", layout="wide")
 
-# 표(st.dataframe)의 "열 표시/숨기기·검색·전체화면" 아이콘만 숨긴다.
-# :has()로 "열 표시/숨기기" 버튼이 있는 툴바(=표 전용 툴바)만 골라 범위를 좁혀서,
-# 그래프(차트) 쪽 툴바는 건드리지 않는다. 열 너비 드래그(리사이즈)와
-# 헤더 클릭 정렬은 이 버튼들과 무관한 별도 동작이라 그대로 남는다.
-st.markdown(
-    """
-    <style>
-    div[data-testid="stElementToolbar"]:has(button[aria-label="Show/hide columns"]) {
-        display: none;
-    }
-
-    /* ── KPI 카드 (예전 프로젝트 디자인 참고 반영, 2026-09) ──
-       원래 흰 배경+회색 테두리였는데, 참고 이미지의 "왼쪽 포인트 컬러 바 + 옅은
-       배경" 카드 스타일을 채용 — 다만 참고 이미지는 다크 테마(짙은 배경+청록
-       글자)였고, 이 대시보드는 라이트 테마라 배경만 연한 푸른색으로 가져오고
-       글자색은 검정으로 유지(요청 반영). "측정값·비율류는 초록 포인트 컬러"
-       규칙은 이제 전부 같은 파랑 카드로 통일되면서 의미가 없어져 제거함.
-       처음엔 :has(div[data-testid="stMetric"])로 "지표가 든 카드"를 판별했는데,
-       :has()를 지원 안 하는 브라우저(구버전 등)에서는 이 규칙 전체가 조용히
-       무시되어 스타일이 하나도 안 먹는 문제가 실사용자 리포트로 발견됨(2026-09).
-       그래서 :has() 없이, 이미 각 카드에 준 고유 key(kpi-*/accent-*)를 직접
-       선택자로 써서 브라우저 호환성 문제 없이 동작하게 함("불량 발생 목록"
-       스크롤 상자에 쓴 것과 같은 st-key- 클래스 선택 패턴).
-       height를 고정값으로 통일(min-height였을 때는 라벨 줄바꿈 여부에 따라
-       카드마다 1~2px 차이가 남아 있었음 — 고정 height로 완전히 맞춤). */
-    div[class*="st-key-kpi-"], div[class*="st-key-accent-"] {
-        background: #eaf3fb !important;
-        border: 1px solid #cfe3f5 !important;
-        border-left: 4px solid #4a90d9 !important;
-        border-radius: 10px !important;
-        box-shadow: 0 1px 3px rgba(16, 24, 20, 0.06), 0 1px 2px rgba(16, 24, 20, 0.04);
-        height: 96px !important;
-        flex: 0 0 96px !important;
-        align-self: stretch !important;
-        padding: 0 !important;
-        box-sizing: border-box !important;
-        display: flex !important;
-        flex-direction: column;
-        justify-content: center;
-        overflow: hidden;
-    }
-    div[class*="st-key-kpi-"] div[data-testid="stElementContainer"],
-    div[class*="st-key-accent-"] div[data-testid="stElementContainer"] {
-        padding: 10px 16px !important;
-    }
-    div[class*="st-key-kpi-"] label[data-testid="stMetricLabel"],
-    div[class*="st-key-accent-"] label[data-testid="stMetricLabel"] {
-        color: #111827 !important;
-        font-size: 0.82rem !important;
-    }
-    div[class*="st-key-kpi-"] [data-testid="stMetricValue"],
-    div[class*="st-key-accent-"] [data-testid="stMetricValue"] {
-        color: #111827 !important;
-    }
-
-    /* st.metric 위젯 전반 — 라벨/값 둘 다 확실히 가운데 정렬
-       (라벨은 Streamlit 기본 CSS가 text-align:left를 더 구체적인 선택자로
-       지정해서, 위의 일반 규칙만으로는 안 먹었음 — !important로 명시) */
-    [data-testid="stMetric"] {
-        text-align: center;
-    }
-    [data-testid="stMetric"] > div {
-        justify-content: center;
-    }
-    [data-testid="stMetricLabel"] {
-        justify-content: center !important;
-        text-align: center !important;
-        width: 100%;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-    [data-testid="stMetricLabel"] > div {
-        text-align: center !important;
-        width: 100%;
-    }
-
-    /* 디자인 참고(TFinder) 반영 — 사이드바에 옅은 톤을 줘서 본문과 구분되게 하고,
-       페이지 전환 메뉴(세그먼트 버튼)를 감싸는 파스텔 배경 바를 추가해서
-       참고 디자인의 nav bar 느낌을 살림(2026-09). */
-    section[data-testid="stSidebar"] {
-        background-color: #f2f7f4;
-    }
-    div[data-testid="stSegmentedControl"] {
-        background: #e3f0e8;
-        border-radius: 12px;
-        padding: 6px;
-    }
-
-    /* "불량 발생 목록" 스크롤 상자(key="defect-list-box")를 목록 컬럼 전체 폭이
-       아니라 내용에 맞는 폭으로 줄여서, 스크롤바가 "조회" 버튼과 멀리 떨어지지
-       않고 바로 옆에 오게 함(요청 반영, 2026-09). */
-    div[class*="st-key-defect-list-box"] {
-        max-width: 420px;
-    }
-
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown(ui.CSS, unsafe_allow_html=True)
 
 
 @st.cache_data
@@ -139,7 +42,7 @@ _loading_slot.markdown(
     <div style="display:flex; flex-direction:column; align-items:center;
                 justify-content:center; padding: 72px 0;">
       <div style="width:52px; height:52px; border:5px solid #e5e9e7;
-                  border-top-color:#059669; border-radius:50%;
+                  border-top-color:#2563eb; border-radius:50%;
                   animation:_spin 0.8s linear infinite;"></div>
       <div style="margin-top:18px; font-size:1.05rem; color:#4b5563;">Loading...</div>
     </div>
@@ -167,13 +70,32 @@ def _goto_lot(date_str: str, lot_num: int) -> None:
     st.session_state.sel_lot = str(lot_num)
 
 
+def _on_heatmap_select() -> None:
+    """Selection callbacks execute before sidebar widgets are instantiated."""
+    event = st.session_state.get('lot_heatmap', {})
+    points = event.get('selection', {}).get('lot_pick', [])
+    if not points:
+        return
+    point = points[-1]
+    try:
+        date_str = str(point['date_key'])
+        lot_num = int(point['lot'])
+    except (KeyError, ValueError, TypeError):
+        return
+    valid = lots[(lots['date'].astype(str) == date_str) & (lots['lot'] == lot_num) & (lots['error'] == 1)]
+    period = st.session_state.get('period')
+    if valid.empty or (period and not period[0] <= valid.iloc[0]['date'] <= period[1]):
+        return
+    _goto_lot(date_str, lot_num)
+
+
 def _notice(text: str, kind: str = "info") -> None:
     """참고한 타사 대시보드(TFinder)처럼, 중요 안내문을 파스텔 컬러 박스로 강조.
     기본 st.info()/st.caption()보다 눈에 잘 들어오고, 색으로 "좋은 소식(info)"과
     "주의/미채택 등(warn)"을 구분해서 전달한다(2026-09, 디자인 참고 반영).
     kind: "info"(연초록, 설명·공지용) 또는 "warn"(연노랑, 주의·제약사항용)."""
     palette = {
-        "info": ("#eafaf1", "#1f7a4d", "#bfe6cf"),
+        "info": ("#edf4ff", "#2457a7", "#ccddf7"),
         "warn": ("#fdf6e3", "#8a6d1f", "#f0e2ab"),
     }
     bg, fg, border = palette.get(kind, palette["info"])
@@ -200,41 +122,34 @@ def _ai_report_section(label: str, cache_key: str) -> None:
 
 
 def _shap_insight(contrib: pd.DataFrame, top_n: int = 3) -> str:
-    """SHAP 기여도 기반 인사이트 문장 — 기존 이탈률 규칙 기반 인사이트를 대체함
-    (2026-09). SHAP이 이탈률 3개를 포함한 12개 피처 전부를 이미 반영하고, 실제
-    모델이 판정에 쓴 근거와 다를 수 있는 규칙(이탈률 기준)보다 신뢰도가 높다고
-    판단해 규칙기반 문장은 빼고 SHAP 결과를 그대로 문장으로 풀어서 보여준다.
-    단, "이 값을 낮추면 정상화된다"는 식의 조정 방향은 말하지 않는다 — 트리
-    모델은 피처-결과 관계가 항상 단조롭다는 보장이 없어, SHAP 기여도만으로
-    그런 인과적 조정 방향을 단정하는 것은 과장이 될 수 있기 때문."""
+    """Explain the strongest contributions without presenting them as causes."""
+    from html import escape
     if contrib.empty:
         return "표시할 SHAP 결과가 없습니다."
-    top = contrib.iloc[0]
-    top_dir = "불량" if top["shap"] > 0 else "정상"
-    lines = [
-        f"이번 LOT은 <b>{top['label']}</b>(값 {top['value']:.3g})이 모델 판정에 가장 크게 "
-        f"기여했습니다 (SHAP 기여도 {top['shap']:+.3f}, <b>{top_dir}</b> 쪽으로 작용) — "
-        f"채택 모델(XGBoost 12F)이 이 LOT을 판정할 때 실제로 가장 많이 참고한 값입니다.",
-        "<br>피처별 상세(|기여도| 큰 순):",
-    ]
-    for i, row in contrib.head(top_n).reset_index(drop=True).iterrows():
-        d = "불량" if row["shap"] > 0 else "정상"
-        lines.append(
-            f"&nbsp;&nbsp;{i+1}. <b>{row['label']}</b> — 값 {row['value']:.3g}, "
-            f"SHAP 기여도 {row['shap']:+.3f} ({d} 쪽)"
-        )
-    return "<br>".join(lines)
+    ranked = contrib.loc[contrib['shap'].abs().sort_values(ascending=False).index]
+    lines = ['<b>판정 근거 핵심 해석</b><br>아래 항목은 영향의 절댓값이 큰 순서입니다. 빨강(+)은 불량 방향, 파랑(−)은 정상 방향으로 모델 점수를 움직인 근거입니다.']
+    for i, row in ranked.head(top_n).reset_index(drop=True).iterrows():
+        label = str(row['label'])
+        direction = '불량 방향' if row['shap'] > 0 else ('정상 방향' if row['shap'] < 0 else '영향 없음')
+        if '표준편차' in label:
+            meaning = '공정 중 측정값의 흔들림 정도입니다. 값의 수준뿐 아니라 순간 변동과 제어 기록을 확인하세요.'
+        elif 'IQR' in label:
+            meaning = '측정값 가운데 50%가 차지하는 범위입니다. 일부 극단값보다 전반적인 변동 폭을 나타내므로 관리도의 분포와 함께 확인하세요.'
+        elif '최솟값' in label or '최소' in label:
+            meaning = 'LOT에서 기록된 가장 낮은 측정값입니다. 해당 시점의 지속 여부와 센서·작업 기록을 대조하세요.'
+        elif '이탈' in label:
+            meaning = '정해진 관리 기준을 벗어난 측정값의 비율입니다. 어느 시점과 방향에서 이탈했는지 관리도를 확인하세요.'
+        else:
+            meaning = '이 항목의 측정 기록과 관리도에서 일시적 변화인지 반복되는 패턴인지 확인하세요.'
+        lines.append(f'<p><b>{i+1}. {escape(label)}</b> · 값 <b>{row["value"]:.3g}</b><br>모델 영향: <b>{direction}</b> (SHAP {row["shap"]:+.3f}). {meaning}</p>')
+    lines.append('정상 방향의 기여가 있어도 최종 판정은 불량일 수 있습니다. 모델은 모든 항목의 기여를 함께 반영합니다. <b>SHAP 크기는 불량 확률이나 조정 목표값이 아니며, 원인·조정 효과를 증명하지 않습니다.</b>')
+    return ''.join(lines)
 
 
 def _kpi_card(col, label: str, value: str, key: str, help: str | None = None) -> None:
-    """카드 하나 생성. 모든 카드가 같은 연한 푸른색 스타일(참고 이미지 디자인
-    반영, 2026-09)이라 key의 "accent-" 접두어는 이제 스타일에 영향 없음 —
-    기존 코드와의 호환을 위해 접두어 자체는 그대로 남겨둠.
-    help: 라벨 오른쪽에 물음표(?) 아이콘을 붙여서, 마우스를 올리면 설명이 뜨게 함
-    (st.metric 내장 기능 — 튜터 피드백으로 "아래에 길게 설명하지 말고 도움말(?)로"
-    요청받아 반영, 2026-09). None이면 물음표 없이 기존과 동일."""
-    with col.container(border=True, key=key):
-        st.metric(label, value, help=help)
+    """Render owned HTML markup so KPI styling does not depend on widget wrappers."""
+    with col.container(key=key):
+        st.markdown(ui.kpi_html(label, value, help), unsafe_allow_html=True)
 
 
 def _clicked_point_idx(chart_state, n: int) -> int | None:
@@ -334,7 +249,24 @@ def _render_variable_table(var_table: pd.DataFrame) -> None:
             ]},
         ])
     )
-    st.table(styled)
+    # Explicit table layout prevents column widths from expanding with the page.
+    styled = styled.set_table_attributes('style="width:100%;table-layout:fixed;border-collapse:collapse"')
+    table_html = styled.hide(axis="index", names=True).to_html()
+    table_html = re.sub(
+        r'(<thead>\s*<tr>\s*<th\b[^>]*>).*?(</th>)',
+        r'\1변수\2', table_html, count=1, flags=re.S,
+    )
+    st.html(
+        '<style>' 
+        '.lot-stats-table{width:100%;max-width:640px;box-sizing:border-box;}'
+        '.lot-stats-table table{font-size:14px;color:#172b4d;}'
+        '.lot-stats-table th,.lot-stats-table td{padding:10px 12px;border:1px solid #dce3ed;box-sizing:border-box;overflow-wrap:anywhere;}'
+        '.lot-stats-table th{text-align:left;}'
+        '.lot-stats-table td{text-align:right;font-variant-numeric:tabular-nums;}'
+        '.lot-stats-table tr>*:first-child{width:22%;}'
+        '.lot-stats-table tr>*:not(:first-child){width:26%;}'
+        '</style><div class="lot-stats-table">' + table_html + '</div>'
+    )
 
 
 def _render_deviation_rates(var_table: pd.DataFrame) -> None:
@@ -342,7 +274,7 @@ def _render_deviation_rates(var_table: pd.DataFrame) -> None:
     측정값이 기준을 벗어난 비율이라는 걸 캡션으로 같이 안내한다."""
     st.caption("이탈률 — 이 LOT 자체 측정값 중 기준을 벗어난 비율")
     for _, row in var_table.iterrows():
-        c1, c2 = st.columns([1, 4])
+        c1, c2 = st.columns([1, 1.4], gap="small")
         with c1:
             st.write(f"**{row['변수']}** ({row['방향']})")
         with c2:
@@ -359,7 +291,7 @@ def _control_chart_options() -> dict:
     value= 수동 재할당 대신 key=만 써서 Streamlit이 알아서 관리하게 한다.
     옵션 패널 자체도 기본은 접혀 있고 필요한 사람만 펼쳐서 보게 expander로 감쌈(팀 피드백)."""
     defaults = {
-        "cc_show_sigma3": False,
+        "cc_show_sigma3": True,
         "cc_show_iqr": False, "cc_show_min": False,
     }
     for k, v in defaults.items():
@@ -367,7 +299,7 @@ def _control_chart_options() -> dict:
 
     with st.expander("관리도 표시 옵션", expanded=False):
         o1, o2, o3 = st.columns(3)
-        o1.checkbox("3σ 밴드", key="cc_show_sigma3")
+        o1.checkbox("±3σ 기준선 (점선)", key="cc_show_sigma3")
         o2.checkbox("IQR 음영", key="cc_show_iqr")
         o3.checkbox("최솟값 표시", key="cc_show_min")
     return {
@@ -381,8 +313,8 @@ if "page" not in st.session_state:
     st.session_state.page = "🧪 센서 데이터"
 # "보기 선택"(view_mode) 토글은 폐지 — 튜터 피드백으로 한 화면에 정보가 너무 많다는
 # 지적을 반영해, 본문 상단에 크롬 탭 스타일 탭바(sensor_tab)로 재구성함(2026-09).
-# "선택 로트 진행 분석"은 별도 토글이 아니라 "로트 분석" 탭 그 자체가 됨.
-if "sensor_tab" not in st.session_state:
+# 이전 로트 분석 탭을 보고 있던 세션도 통합 화면으로 이동한다.
+if st.session_state.get("sensor_tab") not in ("데이터", "모델·인사이트"):
     st.session_state.sensor_tab = "데이터"
 
 # 갤러리에서 "조회" 버튼을 누르면 위젯이 이미 그려진 뒤라 session_state를
@@ -495,109 +427,16 @@ st.title("크로메이트 도금 공정 모니터링")
 
 # ── 메인 영역 ──────────────────────────────
 if st.session_state.page == "🧪 센서 데이터":
-    # 크롬 탭 스타일 탭바(요청 반영, 2026-09) — 한 화면에 정보가 너무 많다는
-    # 튜터 피드백으로 "데이터"/"로트 분석"/"모델·인사이트" 3개로 분리.
-    # st.tabs는 코드로 강제 전환이 안 되므로(히트맵 옆 "조회" 버튼 같은 프로그래매틱
-    # 이동 패턴과 충돌), 사이드바 메뉴와 같은 segmented_control 방식을 그대로 씀.
+    # 조회와 진행 분석은 데이터 화면에서 연결한다.
     st.segmented_control(
         "탭 선택",
-        ["데이터", "로트 분석", "모델·인사이트"],
+        ["데이터", "모델·인사이트"],
         label_visibility="collapsed",
         key="sensor_tab",
         required=True,
     )
 
-    if st.session_state.sensor_tab == "로트 분석":
-        sel = st.session_state.get("selected_lot")
-        lot_label = st.session_state.get("selected_lot_label")
-        if not sel:
-            if lot_label == "전체":
-                st.info("선택 로트 진행 분석은 LOT 단위로 동작합니다. 사이드바에서 특정 LOT을 선택해주세요.")
-            else:
-                st.warning("사이드바에서 LOT을 선택해주세요.")
-        else:
-            lot_date, lot_slot = sel
-
-            st.caption(f"진행 분석 대상: {lot_label}")
-            progress = st.slider("진행률", min_value=0, max_value=100, value=60, step=1)
-
-            lot_ts = md.get_lot_timeseries(timeseries, lot_date, lot_slot)
-            total_points = len(lot_ts)
-
-            if total_points == 0:
-                st.warning("해당 LOT의 시계열 데이터가 없습니다.")
-            else:
-                # 그래프·표는 실제 진행률(1% 단위)에 맞춰 즉시 계산
-                upto = max(1, round(total_points * progress / 100))
-
-                # AI 참고 위험도는 팀이 사전계산한 체크포인트(20/30/.../100%)에서만
-                # 나온다 — 슬라이더가 그 사이 값이면 "이하의 가장 가까운 체크포인트" 기준으로 표시
-                available = [p for p in md.PROGRESS_LEVELS if p <= progress]
-                checkpoint = max(available) if available else None
-
-                _notice(
-                    "AI 참고 위험도(Early Warning)는 <b>최종 채택된 모델이 아닙니다.</b> "
-                    "75~80% 구간까지도 안정성 기준(불량 9건 중 최소 7건 검출)을 만족하지 못해 "
-                    "참고용으로만 제공됩니다. 이 값을 근거로 한 확정 판정은 하지 않습니다.",
-                    kind="warn",
-                )
-
-                if checkpoint is None:
-                    ew = None
-                else:
-                    ew = md.get_ew_oof(progress_cp, lot_date, lot_slot, checkpoint)
-
-                show_vars = st.session_state.get("show_vars", {"pH": True, "온도": True, "전압": True})
-
-                st.subheader(f"선택 시점({progress}%)까지의 그래프")
-                # 참고 대시보드 스타일 반영: 그래프 옆에 진행률·AI 위험도 지표를 나열
-                # (기존엔 그래프 위에 별도 지표 행으로 있었음 — 팀 피드백으로 나란히 배치).
-                graph_col, side_col = st.columns([3, 1])
-                with graph_col:
-                    st.altair_chart(
-                        ch.combined_zscore_chart(lot_ts.iloc[:upto], show_vars), width="stretch"
-                    )
-                with side_col:
-                    st.metric("진행률", f"{progress}%")
-                    ai_help = (
-                        "채택된 최종 모델이 아니라 참고용 Early Warning 신호입니다.\n\n"
-                        "정상 데이터 대비 위험 순위(percentile)를 **낮음/주의/높음** 3단계로 "
-                        "표시합니다 — 75~80% 진행 구간까지도 안정성 기준(불량 9건 중 최소 "
-                        "7건 검출)을 만족하지 못해 확정 판정에는 쓰지 않습니다."
-                    )
-                    alert_help = (
-                        "이 시점까지의 Early Warning 확률이, 해당 체크포인트에서 미리 정해둔 "
-                        "경보 기준값(threshold)을 넘었는지 여부입니다.\n\n"
-                        "**예**여도 확정 불량 판정이 아니라 \"더 주의 깊게 볼 필요가 있다\"는 "
-                        "참고 신호일 뿐입니다."
-                    )
-                    if checkpoint is None or not ew:
-                        st.metric("AI 참고 위험도", "데이터 부족", help=ai_help)
-                        st.metric("경보 기준 초과 여부", "-", help=alert_help)
-                    else:
-                        status = md.risk_status_label(ew["risk_percentile"])
-                        st.metric("AI 참고 위험도", status, help=ai_help)
-                        st.metric(
-                            "경보 기준 초과 여부", "예" if ew["threshold_alert"] else "아니오",
-                            help=alert_help,
-                        )
-                if checkpoint is not None and ew and checkpoint != progress:
-                    st.caption(f"※ AI 참고 위험도는 최근 체크포인트인 {checkpoint}% 시점 기준입니다.")
-
-                st.subheader("관리도")
-                cc_opts = _control_chart_options()
-                st.caption("점선 = 정상 LOT 평균 궤적")
-                for var_name in ["pH", "온도", "전압"]:
-                    if show_vars.get(var_name, True):
-                        st.altair_chart(
-                            ch.variable_control_chart(
-                                lot_ts, var_name, ref_stats=ref_stats[var_name], upto=upto,
-                                golden_batch_raw=golden_batch_raw,
-                                **cc_opts
-                            ),
-                            width="stretch",
-                        )
-    elif st.session_state.sensor_tab == "데이터":
+    if st.session_state.sensor_tab == "데이터":
         start_d, end_d = st.session_state.get("period", (df["date"].min(), df["date"].max()))
         period_df = df[(df["date"] >= start_d) & (df["date"] <= end_d)]
 
@@ -643,18 +482,22 @@ if st.session_state.page == "🧪 센서 데이터":
         # 피드백 반영(이전엔 목록만 늘어나는 CSS 트릭을 썼었는데 그건 걷어냄).
         # 제목도 컬럼 밖(위)에 하나로 두지 않고 각 컬럼 안에 넣어서, 두 제목이 같은
         # 줄에서 시작하고 그 아래 실제 내용(그래프/목록)도 상하 위치가 맞게 함.
-        heat_col, list_col = st.columns([1, 1])
+        st.markdown('<div class="section-gap" aria-hidden="true"></div>', unsafe_allow_html=True)
+        heat_col, list_col = st.columns([2, 1], gap="large")
         with heat_col:
             st.markdown("**전체 LOT 중 불량 위치**")
-            st.altair_chart(
-                ch.defect_heatmap_chart(sd.get_lot_list(period_df)), width="content"
-            )
+            with st.container(border=True, key="heatmap-panel"):
+                st.altair_chart(
+                    ch.defect_heatmap_chart(sd.get_lot_list(period_df), st.session_state.get("selected_lot")),
+                    width="stretch", key="lot_heatmap",
+                    on_select=_on_heatmap_select, selection_mode=["lot_pick"]
+                )
             st.caption("회색 = 정상, 빨강 = 불량 (정상 칸은 마우스를 올려도 반응하지 않습니다)")
         with list_col:
             st.markdown("**불량 발생 목록**")
             defect_rows = sd.get_lot_list(period_df)
             defect_rows = defect_rows[defect_rows["error"] == 1].sort_values("date")
-            with st.container(height=330, key="defect-list-box"):
+            with st.container(height=420, key="defect-list-box"):
                 if defect_rows.empty:
                     st.caption("이 기간에는 불량이 없습니다.")
                 else:
@@ -671,66 +514,59 @@ if st.session_state.page == "🧪 센서 데이터":
                                 args=(str(row_date), row_lot),
                             )
 
-        # "데이터" 탭 — 선택 LOT의 그래프·관리도까지만(모델판정/인사이트는 "모델·인사이트" 탭으로 분리, 2026-09).
+        st.caption("히트맵의 빨간 불량 칸을 클릭하면 아래 상세 조회가 갱신됩니다. 빨강 = 불량")
+
+        st.divider()
         sel = st.session_state.get("selected_lot")
         lot_label = st.session_state.get("selected_lot_label")
-        if sel:
+        if not sel:
+            if lot_label == "전체":
+                st.info("히트맵의 불량 칸이나 사이드바에서 LOT을 선택하면 이곳에 상세 분석이 표시됩니다.")
+            else:
+                st.warning("사이드바에서 LOT을 선택해주세요.")
+        else:
             lot_date, lot_slot = sel
-            show_vars = st.session_state.get("show_vars", {"pH": True, "온도": True, "전압": True})
+
+            st.subheader(f"LOT 상세 분석 — {lot_label}")
+            progress = st.slider("진행률", min_value=0, max_value=100, value=100, step=1, key="lot_progress")
 
             lot_ts = md.get_lot_timeseries(timeseries, lot_date, lot_slot)
-            if not lot_ts.empty:
-                st.subheader(f"시간-변수값 그래프 — {lot_label}")
-                # 참고 대시보드 스타일 반영: 그래프 옆에 그 시점 값을 나열.
-                # 점을 클릭하면 그 시점 값으로 갱신되고(팀 피드백), 클릭 전에는 마지막 값을 보여준다.
-                # 자동판정은 사이드 패널이 아니라 그래프 "아래"에 별도 행으로 배치(팀 피드백).
-                # 점선 = 정상 LOT 평균 궤적(참고 대시보드의 "Golden Batch" 개념을 우리 데이터로
-                # 구현한 것 — 화면에는 "Golden Batch"라는 용어를 쓰지 않기로 함, 2026-09).
-                graph_col, side_col = st.columns([3, 1])
-                with graph_col:
-                    chart_state = st.altair_chart(
-                        ch.combined_zscore_chart(
-                            lot_ts, show_vars, golden_batch=golden_batch
-                        ),
-                        on_select="rerun",
-                        selection_mode=["point_select"],
-                        key="zscore_chart_hist",
-                        width="stretch",
-                    )
-                    st.caption("점선 = 정상 LOT 평균 궤적")
-                with side_col:
-                    clicked_idx = _clicked_point_idx(chart_state, len(lot_ts))
-                    if clicked_idx is not None:
-                        row = lot_ts.iloc[clicked_idx]
-                        st.caption(f"선택 시점: {row['Timestamp'].strftime('%H:%M:%S')}")
-                    else:
-                        row = lot_ts.iloc[-1]
-                        st.caption("점을 클릭하면 그 시점 값이 표시됩니다 (기본: 마지막 값)")
-                    if show_vars.get("pH", True):
-                        st.metric("pH", f"{row['pH']:.2f}")
-                    if show_vars.get("온도", True):
-                        st.metric("온도", f"{row['Temp']:.1f}℃")
-                    if show_vars.get("전압", True):
-                        st.metric("전압", f"{row['Voltage']:.1f}V")
+            total_points = len(lot_ts)
+
+            if total_points == 0:
+                st.warning("해당 LOT의 시계열 데이터가 없습니다.")
+            else:
+                # 그래프·표는 실제 진행률(1% 단위)에 맞춰 즉시 계산
+                upto = max(1, round(total_points * progress / 100))
+                current = lot_ts.iloc[upto - 1]
+                available = [p for p in md.PROGRESS_LEVELS if p <= progress]
+                checkpoint = max(available) if available else None
+                ew = md.get_ew_oof(progress_cp, lot_date, lot_slot, checkpoint) if checkpoint is not None else None
+                risk = md.risk_status_label(ew["risk_percentile"]) if ew else "데이터 부족"
+                alert = ("예" if ew["threshold_alert"] else "아니오") if ew else "—"
+                basis = f"최근 체크포인트 {checkpoint}% 기준입니다." if checkpoint is not None else "아직 사용 가능한 체크포인트가 없습니다."
+                risk_help = "최종 채택 모델이 아닌 참고용 Early Warning 신호입니다. 확정 불량 판정에는 사용하지 않습니다.\n\n" + basis
+                alert_help = "해당 체크포인트의 Early Warning 확률이 경보 기준값을 초과했는지 표시합니다. '예'는 확정 불량 판정이 아닙니다.\n\n" + basis
+                is_defect = bool(lot_ts["Defect"].eq(1).any())
+                st.markdown(ui.process_html(progress, current, risk, alert, risk_help, alert_help, is_defect=is_defect), unsafe_allow_html=True)
+                if ew and checkpoint != progress:
+                    st.caption(f"AI 참고 위험도·경보 여부는 {checkpoint}% 체크포인트 기준입니다.")
+
+                show_vars = st.session_state.get("show_vars", {"pH": True, "온도": True, "전압": True})
 
                 st.subheader("관리도")
                 cc_opts = _control_chart_options()
-                st.caption("점선 = 정상 LOT 평균 궤적")
+                st.caption("빨간 점선 = 평균 ±3σ · 회색 점선 = 평균")
                 for var_name in ["pH", "온도", "전압"]:
                     if show_vars.get(var_name, True):
-                        st.altair_chart(
-                            ch.variable_control_chart(
-                                lot_ts, var_name, ref_stats=ref_stats[var_name],
-                                golden_batch_raw=golden_batch_raw,
-                                **cc_opts
-                            ),
-                            width="stretch",
-                        )
-        else:
-            if lot_label == "전체":
-                st.info("특정 LOT을 선택하면 그래프·관리도를 볼 수 있습니다.")
-            else:
-                st.warning("사이드바에서 LOT을 선택해주세요.")
+                        with st.container(border=True, key=f"control-panel-{var_name}"):
+                            st.altair_chart(
+                                ch.variable_control_chart(
+                                    lot_ts, var_name, ref_stats=ref_stats[var_name], upto=upto,
+                                    **cc_opts
+                                ),
+                                width="stretch",
+                            )
 
     elif st.session_state.sensor_tab == "모델·인사이트":
         # "모델" 탭과 "인사이트" 탭을 결국 하나로 합치기로 함(요청 반영, 2026-09) —
@@ -748,6 +584,7 @@ if st.session_state.page == "🧪 센서 데이터":
                 st.caption(f"선택 LOT: {lot_label}")
 
                 if final_oof:
+                    st.markdown('<div class="section-gap" aria-hidden="true"></div>', unsafe_allow_html=True)
                     st.subheader("모델 판정 (완료 LOT · OOF 검증값)")
                     fc1, fc2, fc3 = st.columns(3)
                     # 원본 데이터(팀 핸드오프 CSV)는 "정상 위험"/"불량 위험"으로 돼 있는데,
@@ -780,6 +617,7 @@ if st.session_state.page == "🧪 센서 데이터":
                 # dashboard_model_validation.csv를 그대로 가져다 씀. "채택"된 모델(완료 LOT
                 # 판정용)만 메인으로 보여주고, Early Warning(미채택)은 캡션으로만 언급.
                 # 모델 판정 바로 아래에 둬서 "이 판정을 낸 모델이 이거다"가 뒤이어 나오게 함(2026-09, 순서 변경).
+                st.markdown('<div class="section-gap" aria-hidden="true"></div>', unsafe_allow_html=True)
                 with st.expander("모델 정보", expanded=False):
                     mv = md.load_model_validation()
                     model_row = mv[mv["Decision"] == "채택"].iloc[0]
@@ -800,14 +638,20 @@ if st.session_state.page == "🧪 센서 데이터":
                 lot_df = sd.get_lot_subset(df, lot_date, lot_slot)
                 var_table = sd.get_variable_table(lot_df)
                 var_table_shown = var_table[var_table["변수"].map(show_vars).fillna(True)]
+                st.markdown('<div class="section-gap" aria-hidden="true"></div>', unsafe_allow_html=True)
                 st.markdown(f"**주요변수 파생변수 — {lot_label} (모델 학습 사용 지표)**")
-                _render_variable_table(var_table_shown)
-                _render_deviation_rates(var_table_shown)
+                table_col, rates_col = st.columns([1.15, 1], gap="large")
+                with table_col:
+                    st.caption("주요변수 통계")
+                    _render_variable_table(var_table_shown)
+                with rates_col:
+                    _render_deviation_rates(var_table_shown)
 
                 # 인사이트: 기존엔 이탈률 기준 규칙기반 문장이었는데, SHAP이 이탈률을
                 # 포함한 12개 피처 전부를 이미 반영하고 실제 모델 근거와 더 일치해서
                 # 규칙기반은 빼고 SHAP 하나로 통합함(요청 반영, 2026-09) — SHAP 차트 →
                 # SHAP 기반 인사이트 문장 → AI 자동 리포트 순서.
+                st.markdown('<div class="section-gap" aria-hidden="true"></div>', unsafe_allow_html=True)
                 st.subheader(
                     "인사이트",
                     help=(
@@ -822,88 +666,41 @@ if st.session_state.page == "🧪 센서 데이터":
                     st.altair_chart(ch.shap_contribution_chart(shap_contrib), width="stretch")
                     st.caption("빨강 = 불량 쪽으로 민 피처 · 파랑 = 정상 쪽으로 민 피처 (절댓값 큰 상위 6개)")
                     _notice(_shap_insight(shap_contrib), kind="info")
+                    with st.expander("SHAP 상세 수치와 읽는 법", expanded=False):
+                        st.markdown("**읽는 순서:** 영향이 큰 항목을 확인하고 → 측정값과 관리도를 대조한 뒤 → 작업·설정 변경 기록을 확인합니다. 같은 변수라도 최솟값·변동 폭·이탈률은 서로 다른 특성을 설명합니다.")
+                        details = shap_contrib[["label", "value", "shap"]].copy()
+                        details["영향 방향"] = details["shap"].map(lambda x: "불량 방향" if x > 0 else ("정상 방향" if x < 0 else "영향 없음"))
+                        details = details.loc[details["shap"].abs().sort_values(ascending=False).index]
+                        details = details.rename(columns={"label":"판정 근거 항목", "value":"측정 통계값", "shap":"SHAP 기여도"})
+                        st.dataframe(details, hide_index=True, width="stretch")
+                        st.caption("표에는 전체 항목을, 위 그래프에는 영향이 큰 상위 6개를 표시합니다. 기여도는 모델 출력 척도이며 백분율이 아닙니다.")
                 except Exception:
                     _notice(
                         "SHAP 인사이트를 계산할 모델 파일을 찾을 수 없어 이 섹션은 건너뜁니다.",
                         kind="warn",
                     )
 
-                # AI 자동 리포트(OpenAI, gpt-4o-mini) — 4가지: 1.전체 요약 2.관리도
-                # 요약 3.모델 요약 4.SHAP 요약(기존 기능). 개별 생성 버튼은 없애고
-                # "AI 자동 리포트 생성" 버튼 하나로 4개를 한 번에 채움(요청 반영,
-                # 2026-09) — 하나가 실패해도 나머지는 정상 표시된다.
 
-                # 1. 전체 요약용 데이터 — 이 탭엔 "데이터" 탭의 KPI 계산이 없어서 여기서
-                # 다시 구함("로트 분석" 탭이 lot_ts 등을 독립적으로 다시 구하는 것과 같은 패턴).
-                ov_start_d, ov_end_d = st.session_state.get(
-                    "period", (df["date"].min(), df["date"].max())
-                )
-                ov_period_df = df[(df["date"] >= ov_start_d) & (df["date"] <= ov_end_d)]
-                ov_kpi = sd.get_overview_kpi(ov_period_df)
-                ov_ooc = md.get_out_of_control_rate(timeseries, ov_start_d, ov_end_d)
-                ov_trend = md.get_recent_defect_rate_trend(df, ov_end_d)
-                ov_period_label = f"{ov_start_d} ~ {ov_end_d}"
-
-                # 2. 관리도 요약용 데이터 — 선택 LOT 건수 "앞에" 전체 기간 건수도 같이
-                # 줘야 한다는 요청 반영(2026-09): 전체 기간 넬슨룰 위반 건수(rate뿐 아니라
-                # rule1/rule5 건수까지) + 선택 LOT 건수, 프롬프트에서도 전체→LOT 순서로 배치.
-                period_nelson = md.get_period_nelson_violations(timeseries, ov_start_d, ov_end_d)
                 lot_nelson = md.get_lot_nelson_violations(lot_ts)
-
-                report_specs = [
-                    (
-                        "전체 요약",
-                        f"ai_overview_{ov_start_d}_{ov_end_d}",
-                        lambda: ai_report.generate_overview_report(
-                            ov_period_label, ov_kpi, ov_ooc, ov_trend
-                        ),
-                    ),
-                    (
-                        "관리도 요약 리포트",
-                        f"ai_control_{ov_start_d}_{ov_end_d}_{lot_date}_{lot_slot}",
-                        lambda: ai_report.generate_control_chart_report(
-                            lot_label, ov_period_label, period_nelson, lot_nelson
-                        ),
-                    ),
-                    (
-                        "모델 요약",
-                        "ai_model_summary",
-                        lambda: ai_report.generate_model_report(model_row),
-                    ),
-                ]
-                if shap_contrib is not None and final_oof:
-                    report_specs.append((
-                        "SHAP 요약",
-                        f"ai_shap_{lot_date}_{lot_slot}",
-                        lambda: ai_report.generate_shap_report(
-                            lot_label, pred, final_oof["actual_label"], shap_contrib
-                        ),
-                    ))
-
-                st.markdown("**AI 자동 리포트**")
-                if st.button("🤖 AI 자동 리포트 생성", key="ai_report_generate_all"):
-                    with st.spinner("리포트 생성 중..."):
-                        for r_label, r_key, r_fn in report_specs:
-                            try:
-                                st.session_state[r_key] = r_fn()
-                            except Exception as e:
-                                st.session_state[r_key] = None
-                                _notice(f"{r_label} 생성에 실패했습니다: {e}", kind="warn")
-
-                st.markdown("1. 전체 요약")
-                _ai_report_section(report_specs[0][0], report_specs[0][1])
-
-                st.markdown("2. 관리도 요약")
-                _ai_report_section(report_specs[1][0], report_specs[1][1])
-
-                st.markdown("3. 모델 요약")
-                _ai_report_section(report_specs[2][0], report_specs[2][1])
-
-                st.markdown("4. SHAP 요약")
-                if len(report_specs) > 3:
-                    _ai_report_section(report_specs[3][0], report_specs[3][1])
+                st.markdown('<div class="section-gap" aria-hidden="true"></div>', unsafe_allow_html=True)
+                st.subheader("AI 현장 점검 보고서")
+                report_end = st.session_state.get("period", (None, df["date"].max()))[1]
+                report_start = pd.Timestamp(report_end).date() - pd.Timedelta(days=6)
+                st.caption(f"최근 7일: {report_start} ~ {report_end} · 선택 LOT: {lot_label}")
+                report_key = f"ai_operator_v2_{report_end}_{lot_date}_{lot_slot}"
+                if st.button("AI 점검 보고서 생성", key="ai_operator_generate"):
+                    with st.spinner("현장 점검 보고서 작성 중..."):
+                        try:
+                            context = ai_report.build_operator_context(timeseries, report_end, lot_ts)
+                            recent_nelson = md.get_period_nelson_violations(timeseries, pd.Timestamp(report_start).date(), report_end)
+                            st.session_state[report_key] = ai_report.generate_operator_report(lot_label, lot_nelson, final_oof, context, recent_nelson)
+                        except Exception:
+                            st.error("보고서를 생성하지 못했습니다. API 키와 연결 상태를 확인한 뒤 다시 시도해주세요.")
+                if st.session_state.get(report_key):
+                    st.markdown(st.session_state[report_key])
                 else:
-                    st.caption("🤖 SHAP 요약 — SHAP 결과·모델 판정이 없어 생성할 수 없습니다.")
+                    st.caption("최근 7일 변수 현황·일별 흐름·선택 LOT 비교·우선 확인·변수별 점검 및 조정 검토·인수인계를 종합한 보고서를 생성합니다.")
+                st.caption("AI 보고서는 점검 참고용입니다. 실제 조치는 현장 절차와 담당자 확인에 따릅니다.")
             else:
                 st.warning("해당 LOT의 시계열 데이터가 없습니다.")
         else:
@@ -922,17 +719,6 @@ else:
     _kpi_card(c2, "정상 데이터 수", f"{meta['normal_count']:,}장", key="kpi-normal-imgs")
     _kpi_card(c3, "불량 데이터 수", f"{meta['defect_count']}장", key="kpi-defect-imgs")
     _kpi_card(c4, "누적 불량률", f"{defect_rate:.1f}%", key="accent-defect-rate")
-
-    # AI 요약/AI 보고서는 이 페이지엔 필요 없다는 판단으로 제거(요청 반영, 2026-09).
-    # 대신 예전에 화면에서 뺐던 "5-seed 반복 검증 모델 비교" 표를 부활시킴 —
-    # image_data.MODEL_COMPARISON 데이터 자체는 계속 남아있었고 화면에만 안 쓰였음.
-    st.markdown("**모델 비교 (5-seed 반복 검증)**")
-    st.table(imgd.MODEL_COMPARISON.set_index("모델"))
-    st.caption(
-        f"최종 선정: **{meta['final_model']}** — F1 {meta['f1_mean']:.3f} ± {meta['f1_std']:.3f}. "
-        f"불량 {meta['defect_count']}장은 근접중복 제거 후 실질 {meta['unique_defect_groups']}개 "
-        f"결함 그룹으로 확인됨."
-    )
 
     # "판정 확률 분포" 섹션은 팀 피드백으로 삭제(2026-09) — 필요 없다는 판단.
     # imgd.load_confidence_scores / ch.confidence_distribution_chart 함수 자체는 남겨둠.

@@ -13,48 +13,20 @@ DISPLAY_BOUNDS = {
 }
 
 
-def defect_heatmap_chart(lots: pd.DataFrame) -> alt.Chart:
-    """전체 LOT을 날짜(x축)×LOT 슬롯 번호(y축) 정사각형 격자로 표시. 불량 LOT만 강조색.
-    바코드(1차원 나열)보다 "어느 날짜의 몇 번째 슬롯에서 불량이 났는지" 2차원으로
-    한눈에 보여달라는 팀 피드백 반영(2026-09). 날짜마다 슬롯 수가 정확히 22개로
-    똑같아서(실측 확인, 33일×22슬롯=726) 빈 칸 없는 완전한 격자가 나온다.
-    정상/불량을 별도 레이어로 나눠서, 정상 칸은 tooltip=False로 마우스를 올려도
-    아무 반응이 없게 하고(팀 피드백), 불량 칸에만 호버 시 LOT 정보가 뜬다.
-    width/height를 alt.Step(고정 픽셀)으로 줘서 칸이 직사각형이 아니라 정사각형이
-    되게 함(가로 33칸·세로 22칸이라 step을 안 고정하면 셀이 옆으로 퍼져 보임).
-
-    (칸 클릭 시 날짜/LOT 선택을 자동으로 이동시키는 기능을 시도했었으나, 실제
-    브라우저에서 클릭이 안정적으로 등록되지 않는 문제를 끝내 해결 못해 보류함(2026-09)
-    — 대신 app.py의 옆 패널에 "불량 발생 목록" + 조회 버튼(st.button, 훨씬 안정적인
-    방식)으로 같은 요구를 충족시킴.)"""
+def defect_heatmap_chart(lots: pd.DataFrame, selected=None) -> alt.Chart:
+    """Only defective LOTs emit selection events."""
     data = lots.copy()
-    data["날짜"] = data["date"].astype(str)
-    data["상태"] = data["error"].map({0: "정상", 1: "불량"})
-    data["lot_label"] = data["date"].astype(str) + " · Lot " + data["lot"].astype(str)
-
-    x_enc = alt.X("날짜:O", title="날짜", axis=alt.Axis(labelAngle=-45))
-    y_enc = alt.Y("lot:O", title="LOT 슬롯 번호", sort="descending")
-
-    normal = (
-        alt.Chart(data)
-        .transform_filter(alt.datum.상태 == "정상")
-        .mark_rect(color="#e5e9e7", stroke="#ffffff", strokeWidth=1, tooltip=False)
-        .encode(x=x_enc, y=y_enc)
-    )
-    defect = (
-        alt.Chart(data)
-        .transform_filter(alt.datum.상태 == "불량")
-        .mark_rect(color="#dc2626", stroke="#ffffff", strokeWidth=1)
-        .encode(
-            x=x_enc,
-            y=y_enc,
-            tooltip=[
-                alt.Tooltip("lot_label:N", title="LOT"),
-                alt.Tooltip("상태:N", title="결과"),
-            ],
-        )
-    )
-    return (normal + defect).properties(width=alt.Step(14), height=alt.Step(14))
+    data['date_key'] = data['date'].astype(str)
+    data['상태'] = data['error'].map({0: '정상', 1: '불량'})
+    pick = alt.selection_point(name='lot_pick', fields=['date_key', 'lot'],
+                               on='click[event.item && event.item.datum && event.item.datum.error == 1]', toggle=False, clear=False)
+    return (alt.Chart(data).mark_rect(cursor=alt.ExprRef(expr="datum.error == 1 ? 'pointer' : 'default'"), tooltip=alt.ExprRef(expr="datum.error == 1 ? {'날짜': datum.date_key, 'LOT': datum.lot, '상태': datum.상태} : null")).encode(
+        x=alt.X('date_key:O', title='날짜', axis=alt.Axis(labelAngle=-45)),
+        y=alt.Y('lot:O', title='LOT 슬롯 번호', sort='descending'),
+        color=alt.Color('상태:N', scale=alt.Scale(domain=['정상', '불량'], range=['#e5e9ef', '#dc2626']), legend=None),
+        stroke=alt.value('#ffffff'),
+        strokeWidth=alt.value(1),
+    ).add_params(pick).properties(width="container", height=alt.Step(18), background="#ffffff", padding={"left":12,"right":12,"top":12,"bottom":12}))
 
 
 def defect_barcode_chart(lots: pd.DataFrame) -> alt.Chart:
@@ -315,14 +287,14 @@ def variable_control_chart(
     var_name: str,
     ref_stats: dict | None = None,
     upto: int | None = None,
-    show_sigma3: bool = False,
+    show_sigma3: bool = True,
     show_iqr: bool = False,
     show_min: bool = True,
     golden_batch_raw: pd.DataFrame | None = None,
     defect_range_raw: pd.DataFrame | None = None,
 ) -> alt.Chart:
     """변수 하나의 관리도 — 실측값 + 넬슨룰(Rule 1·5) 위반 마커(항상 표시)
-    + (선택) 3σ 밴드 + (선택) IQR 음영 + (선택) 최솟값 포인트.
+    + (선택) ±3σ 점선 + (선택) IQR 음영 + (선택) 최솟값 포인트.
 
     x축은 측정 시각(Timestamp) 기준이며, 마우스를 올리면 가장 가까운 시점에
     세로선 + 강조점 + 툴팁이 뜬다.
@@ -333,7 +305,7 @@ def variable_control_chart(
     넬슨룰(Rule 1: ±3σ 밖 급성 이상, Rule 5: 3점 중 2점 ±2σ 밖 조기경고)은 팀 피드백에
     따라 옵션이 아니라 항상 자동 적용된다 — 위반 점에 마우스를 올리면 툴팁에 몇 번
     룰을 위반했는지(Rule 1 / Rule 5) 표시된다. 2σ 밴드는 화면에 그리지 않되(판정 계산에는
-    여전히 사용), 3σ 밴드는 넬슨룰 자동판정과 별개로 show_sigma3 옵션으로 켜고 끌 수 있다.
+    여전히 사용), ±3σ 점선는 넬슨룰 자동판정과 별개로 show_sigma3 옵션으로 켜고 끌 수 있다.
     구 "팀 기준선"(DISPLAY_BOUNDS의 이탈 기준선, 예: pH>2.20) 옵션은 넬슨룰 자동판정과
     역할이 겹치고 팀 피드백으로 불필요하다고 판단되어 제거함 — DISPLAY_BOUNDS 자체는
     다른 곳(예: 파생변수 계산)에서 여전히 쓰이므로 남겨둔다.
@@ -399,11 +371,17 @@ def variable_control_chart(
         mean, std = ref_stats["mean"], ref_stats["std"]
 
         if show_sigma3:
-            band_df = pd.DataFrame({"y1_3": [mean - 3 * std], "y2_3": [mean + 3 * std]})
-            band3 = alt.Chart(band_df).mark_rect(opacity=0.10, color="#ff4b4b").encode(
-                y=alt.Y("y1_3:Q", scale=y_scale), y2="y2_3:Q"
+            limits = pd.DataFrame({
+                "기준": ["하한 (−3σ)", "상한 (+3σ)"],
+                "기준값": [mean - 3 * std, mean + 3 * std],
+            })
+            sigma_lines = alt.Chart(limits).mark_rule(
+                color="#dc2626", strokeDash=[6, 4], strokeWidth=1.5
+            ).encode(
+                y=alt.Y("기준값:Q", scale=y_scale),
+                tooltip=[alt.Tooltip("기준:N"), alt.Tooltip("기준값:Q", format=".3f")],
             )
-            layers.append(band3)
+            layers.append(sigma_lines)
 
         center_line = alt.Chart(pd.DataFrame({"y": [mean]})).mark_rule(
             color="gray", strokeDash=[2, 2]
@@ -468,49 +446,40 @@ def variable_control_chart(
     chart = layers[0]
     for l in layers[1:]:
         chart = chart + l
-    return chart.properties(height=320, title=title)
+    return (chart.properties(height=300, title=title, background="#ffffff", padding={"left":16,"right":16,"top":16,"bottom":16})
+        .configure_view(stroke=None)
+        .configure_axis(labelFont="Malgun Gothic", titleFont="Malgun Gothic", labelFontSize=11, titleFontSize=12, labelColor="#617089", titleColor="#34445c", gridColor="#e9eef5", domainColor="#d7e1ee", tickColor="#d7e1ee", titlePadding=14)
+        .configure_title(font="Malgun Gothic", fontSize=14, fontWeight=600, color="#243b5b", anchor="start", offset=18))
 
 
 def shap_contribution_chart(contrib: pd.DataFrame, top_n: int = 6) -> alt.Chart:
-    """SHAP 이탈진단 패널 — 선택 LOT에 대해 채택 모델(XGBoost 12F)이 어느 피처를
-    근거로 판정했는지 가로 막대로 표시. 빨강(양수)=불량 쪽으로 민 피처,
-    파랑(음수)=정상 쪽으로 민 피처("위험"이라는 말을 붙이면 정상 쪽까지 위험하게
-    읽혀 어색하다는 피드백으로 뗌, 2026-09). |기여도| 큰 순서로 top_n개만 표시
-    (12개 전부 보여주면 인사이트 규칙기반 목록과 중복감이 커서 요약만, 2026-09).
-    model_data.get_shap_contributions()가 이미 |shap| 내림차순으로 정렬해 준다."""
-    data = contrib.head(top_n).copy()
+    """Signed values outside bar ends, with room on both sides for labels."""
+    data = contrib.loc[contrib["shap"].abs().sort_values(ascending=False).index].head(top_n).copy()
     data["방향"] = data["shap"].map(lambda v: "불량 쪽" if v > 0 else "정상 쪽")
-    order = data["label"].tolist()
-
-    chart = (
-        alt.Chart(data)
-        .mark_bar()
-        .encode(
-            x=alt.X("shap:Q", title="SHAP 기여도 (모델 판정에 미친 영향)"),
-            # 이전엔 properties(height=28*n+40)로 전체 높이를 어림잡아 계산했는데,
-            # 실제 렌더링에서 범례+축 영역을 뺀 실질 막대 영역이 너무 좁아져서
-            # Vega가 라벨 겹침으로 판단해 절반가량을 자동으로 숨겨버리는 문제가
-            # 있었음(막대는 6개 다 그려지는데 라벨은 3개만 보임, 실사용자 리포트로
-            # 발견, 2026-09). alt.Step으로 "행 하나당 고정 픽셀"을 직접 지정해서
-            # 범례/축과 무관하게 막대 영역 자체가 항상 충분히 확보되게 함.
-            y=alt.Y(
-                "label:N", title=None, sort=order,
-                axis=alt.Axis(labelOverlap=False),
-            ),
-            color=alt.Color(
-                "방향:N",
-                scale=alt.Scale(domain=["불량 쪽", "정상 쪽"], range=["#ff4b4b", "#5b9bd5"]),
-                legend=alt.Legend(title=None, orient="top"),
-            ),
-            tooltip=[
-                alt.Tooltip("label:N", title="피처"),
-                alt.Tooltip("value:Q", title="값", format=".3f"),
-                alt.Tooltip("shap:Q", title="SHAP 기여도", format=".3f"),
-            ],
-        )
-        .properties(height=alt.Step(32))
+    data["기여도 표시"] = data["shap"].map(lambda v: f"{v:+.2f}")
+    lo = min(0.0, float(data["shap"].min())) if not data.empty else 0.0
+    hi = max(0.0, float(data["shap"].max())) if not data.empty else 0.0
+    pad = max(hi-lo, .1) * .20
+    base = alt.Chart(data).encode(
+        x=alt.X("shap:Q", title="SHAP 기여도 (모델 판정에 미친 영향)",
+                scale=alt.Scale(domain=[lo-pad, hi+pad], nice=False), axis=alt.Axis(tickCount=7)),
+        y=alt.Y("label:N", title=None, sort=data["label"].tolist(),
+                axis=alt.Axis(labelOverlap=False, labelLimit=180, labelPadding=12)),
     )
-    return chart
+    bars = base.mark_bar(size=22).encode(
+        color=alt.Color("방향:N", scale=alt.Scale(domain=["불량 쪽", "정상 쪽"], range=["#ff4b4b", "#5b9bd5"]), legend=alt.Legend(title=None, orient="top")),
+        tooltip=[alt.Tooltip("label:N", title="피처"), alt.Tooltip("value:Q", title="값", format=".3f"), alt.Tooltip("shap:Q", title="SHAP 기여도", format="+.2f")],
+    )
+    positive = base.transform_filter(alt.datum.shap >= 0).mark_text(
+        align="left", baseline="middle", dx=8, fontSize=12, fontWeight=600, color="#34445c"
+    ).encode(text="기여도 표시:N")
+    negative = base.transform_filter(alt.datum.shap < 0).mark_text(
+        align="right", baseline="middle", dx=-8, fontSize=12, fontWeight=600, color="#34445c"
+    ).encode(text="기여도 표시:N")
+    return (alt.layer(bars, positive, negative).properties(height=alt.Step(38),
+        padding={"left":12,"right":16,"top":12,"bottom":12})
+        .configure_view(stroke=None)
+        .configure_axis(labelColor="#617089", titleColor="#34445c", gridColor="#e9eef5"))
 
 
 def confidence_distribution_chart(df: pd.DataFrame, category: str) -> alt.Chart:
