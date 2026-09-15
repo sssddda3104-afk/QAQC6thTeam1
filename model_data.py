@@ -186,27 +186,14 @@ def risk_status_label(pct: float) -> str:
 
 
 def get_out_of_control_rate(ts: pd.DataFrame, start_d, end_d) -> dict:
-    """선택 기간 내 pH/온도/전압 각각의 "관리이탈율"(넬슨룰 1·5번 위반 비율, %).
-    Cpk를 검토했으나 진짜 외부 규격 한계가 없어(Display_Limit/Model_Ref 둘 다
-    정상 데이터 자체에서 뽑은 값이라 순환적) 대신 채택한 지표 — 이미 그래프에서
-    쓰는 넬슨룰 판정(chart_helpers._nelson_rule1/5)을 LOT별로 그대로 적용해 집계만
-    한다(새 판정 로직 아님, 계산 일관성 보장). Rule 5는 연속 3점 슬라이딩 윈도우라
-    LOT 경계를 넘으면 안 되므로 LOT 단위로 나눠서 계산한다."""
-    from chart_helpers import _nelson_rule1, _nelson_rule5  # 순환참조 없음(chart_helpers는 pandas/altair만 의존)
-
-    period = ts[(ts["Date"] >= start_d) & (ts["Date"] <= end_d)]
-    col_map = {"pH": "pH_Z_Display", "온도": "Temp_Z_Display", "전압": "Voltage_Z_Display"}
-    rates = {}
-    for label, col in col_map.items():
-        total = 0
-        violations = 0
-        for _, g in period.groupby(["Date", "Lot"]):
-            z = g.sort_values("Measurement_No")[col]
-            viol = _nelson_rule1(z) | _nelson_rule5(z)
-            violations += int(viol.sum())
-            total += len(z)
-        rates[label] = round(100 * violations / total, 1) if total else None
-    return rates
+    summary, _ = build_out_of_control_index(ts)
+    period = summary[(summary["Date"] >= start_d) & (summary["Date"] <= end_d)]
+    result = {}
+    for variable in ["pH", "온도", "전압"]:
+        rows = period[period["변수"] == variable]
+        total = int(rows["측정점 수"].sum())
+        result[variable] = round(100 * rows["이탈점 수"].sum() / total, 1) if total else None
+    return result
 
 
 def get_period_nelson_violations(ts: pd.DataFrame, start_d, end_d) -> dict:
@@ -303,6 +290,7 @@ def _load_shap_artifacts():
     return fc, fp, explainer
 
 
+@st.cache_data(show_spinner=False, max_entries=800)
 def get_shap_contributions(lot_df: pd.DataFrame) -> pd.DataFrame:
     """선택한 LOT 하나에 대해, 채택 모델(XGBoost 12F)이 실제로 어느 피처를 근거로
     판정했는지 SHAP 기여도로 계산한다. 인사이트 섹션의 규칙기반(이탈률 기준) 설명과는
@@ -337,3 +325,41 @@ def get_shap_contributions(lot_df: pd.DataFrame) -> pd.DataFrame:
         "shap": shap_vals,
     })
     return out.reindex(out["shap"].abs().sort_values(ascending=False).index).reset_index(drop=True)
+
+
+@st.cache_data(show_spinner=False)
+def build_out_of_control_index(ts: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """KPI와 동일한 LOT별 Rule 1 | Rule 5 측정점 목록. 중복은 한 행으로 집계."""
+    from chart_helpers import _nelson_rule1, _nelson_rule5
+    columns = ["변수", "날짜", "LOT", "측정 번호", "측정 시각", "측정값", "단위", "이탈 사유"]
+    period = ts
+    parts, counts = [], []
+    for label, sensor, unit in [("pH", "pH", "pH"), ("온도", "Temp", "°C"), ("전압", "Voltage", "V")]:
+        for _, group in period.groupby(["Date", "Lot"]):
+            group = group.sort_values("Measurement_No")
+            z = group[f"{sensor}_Z_Display"]
+            r1, r5 = _nelson_rule1(z), _nelson_rule5(z)
+            mask = r1 | r5
+            counts.append({"Date": group["Date"].iloc[0], "Lot": group["Lot"].iloc[0],
+                           "변수": label, "측정점 수": len(group), "이탈점 수": int(mask.sum())})
+            if not mask.any():
+                continue
+            rows = group.loc[mask]
+            detail = pd.DataFrame({
+                "변수": label, "날짜": rows["Date"], "LOT": rows["Lot"],
+                "측정 번호": rows["Measurement_No"], "측정 시각": rows["Timestamp"],
+                "측정값": rows[sensor], "단위": unit,
+                "이탈 사유": ["기준선 밖 · 한쪽 치우침" if a and b else
+                    "기준선 밖" if a else "한쪽 치우침" for a,b in zip(r1[mask], r5[mask])],
+            })
+            parts.append(detail)
+    summary = pd.DataFrame(counts, columns=["Date", "Lot", "변수", "측정점 수", "이탈점 수"])
+    details = (pd.concat(parts, ignore_index=True).sort_values(["날짜", "LOT", "측정 번호", "변수"]).reset_index(drop=True)
+               if parts else pd.DataFrame(columns=columns))
+    return summary, details
+
+
+def get_out_of_control_details(ts: pd.DataFrame, start_d, end_d) -> pd.DataFrame:
+    _, details = build_out_of_control_index(ts)
+    return details[(details["날짜"] >= start_d) & (details["날짜"] <= end_d)].reset_index(drop=True)
+

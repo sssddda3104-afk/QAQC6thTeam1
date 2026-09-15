@@ -13,6 +13,10 @@ import dashboard_ui as ui
 st.set_page_config(page_title="크로메이트 도금 공정 모니터링", layout="wide")
 
 st.markdown(ui.CSS, unsafe_allow_html=True)
+st.markdown("""<style>
+.blue-kpi.verdict-defect {border-color:#fecaca;border-left-color:#dc2626;background:#fff7f7;}
+.blue-kpi.verdict-defect .blue-kpi-value {color:#c62828;}
+</style>""", unsafe_allow_html=True)
 
 
 @st.cache_data
@@ -22,6 +26,7 @@ def _load_data():
     lot_summary = md.load_lot_summary()
     progress_cp = md.load_progress_checkpoint()
     timeseries = md.load_timeseries()
+    md.build_out_of_control_index(timeseries)
     ref_stats = sd.get_normal_reference_stats(df)
     golden_batch = md.get_golden_batch_profile(timeseries)
     defect_range = md.get_defect_batch_range(timeseries)
@@ -147,10 +152,13 @@ def _shap_insight(contrib: pd.DataFrame, top_n: int = 3) -> str:
     return ''.join(lines)
 
 
-def _kpi_card(col, label: str, value: str, key: str, help: str | None = None) -> None:
+def _kpi_card(col, label: str, value: str, key: str, help: str | None = None, warning: bool = False) -> None:
     """Render owned HTML markup so KPI styling does not depend on widget wrappers."""
     with col.container(key=key):
-        st.markdown(ui.kpi_html(label, value, help), unsafe_allow_html=True)
+        card = ui.kpi_html(label, value, help)
+        if warning or (key in ("kpi-verdict", "kpi-actual-label") and value == "불량"):
+            card = card.replace('class="blue-kpi"', 'class="blue-kpi verdict-defect"', 1)
+        st.markdown(card, unsafe_allow_html=True)
 
 
 def _clicked_point_idx(chart_state, n: int) -> int | None:
@@ -177,17 +185,8 @@ def _clicked_point_idx(chart_state, n: int) -> int | None:
 # 파생변수 표(_render_variable_table)·이탈률 진행바(_render_deviation_rates)는
 # 한때 팀 피드백으로 "있어야 할 의미가 없다"고 제거했었으나, 지금은 브레인스토밍 단계라
 # 나중에 분석가/현장직 탭으로 나눌 때 고를 수 있게 일단 복구해둠(2026-09).
-def _render_variable_table(var_table: pd.DataFrame) -> None:
-    """파생변수 표를 이탈률(%)·방향 컬럼은 빼고 표시 + 나머지 숫자 컬럼(표준편차/최솟값/IQR)에
-    정상↔불량 두 기준점 사이 위치로 색칠(요청 반영, 2026-09 — 기존엔 지금 표에 보이는
-    3개 행끼리만 비교하는 상대 히트맵(Oranges, 컬럼별 정규화)이었는데, "정상에 가까우면
-    파랑, 불량에 가까우면 빨강"으로 바꿔달라는 요청). 정상/불량 기준값은 726 LOT 전체의
-    그룹별 중앙값(model_data.get_defect_lean_reference)이라 이 표에 안 보이는 다른
-    LOT들과 비교한 절대적 위치를 보여준다 — 표에 보이는 3행끼리의 상대 비교가 아님.
-    "변수"(pH/온도/전압)는 행 인덱스로 옮겨서 실제 테이블의 행 헤더(th)가 되게 한다.
-    이탈률(%)·방향은 표에서 빼는 대신 바로 아래 진행바로 따로 보여준다(_render_deviation_rates).
-    행 헤더(변수명)·열 헤더(표준편차 등)에 배경색을 줘서 "라벨"과 "실제 값"이 확실히
-    구분되게 함(요청 반영, 2026-09) — 라이트 테마 전환 때 빠졌던 헤더 스타일을 복구."""
+def _render_variable_table(var_table: pd.DataFrame, shap_contrib=None) -> None:
+    """파생변수 값과 해당 모델 피처의 SHAP 방향을 함께 표시."""
     heatmap_cols = [c for c in ["표준편차", "최솟값", "IQR"] if c in var_table.columns]
     display_cols = [c for c in var_table.columns if c not in ("이탈률(%)", "방향")]
     display_df = var_table[display_cols].set_index("변수")
@@ -200,39 +199,20 @@ def _render_variable_table(var_table: pd.DataFrame) -> None:
     # "표준편차/최솟값/IQR" 열 라벨 ↔ 피처 접미어(_std/_min/_IQR) 매핑.
     var_to_code = {"pH": "pH", "온도": "Temp", "전압": "Voltage"}
     col_to_stat = {"표준편차": "std", "최솟값": "min", "IQR": "IQR"}
-    ref = md.get_defect_lean_reference()
-
-    # SHAP 이탈진단 차트와 같은 색(#5b9bd5 파랑=정상 쪽 / #ff4b4b 빨강=불량 쪽)을
-    # 그대로 써서 두 시각화의 색 언어를 통일함(요청 반영, 2026-09) — matplotlib
-    # 콜맵(RdBu_r)을 alpha blending으로 얹었더니 탁한 자주색으로 보인다는 피드백으로,
-    # 직접 3점(파랑→흰색→빨강) 선형보간해 중간(=거의 안 치우침)은 흰색에 가깝고
-    # 끝으로 갈수록 SHAP과 동일한 선명한 색이 나오게 함.
-    _BLUE, _WHITE, _RED = (91, 155, 213), (255, 255, 255), (255, 75, 75)
-
-    def _lean_hex(t: float) -> str:
-        t = min(max(t, 0.0), 1.0)
-        if t <= 0.5:
-            frac = t / 0.5
-            c0, c1 = _BLUE, _WHITE
-        else:
-            frac = (t - 0.5) / 0.5
-            c0, c1 = _WHITE, _RED
-        rgb = tuple(round(c0[i] + (c1[i] - c0[i]) * frac) for i in range(3))
-        return f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
+    contributions = {} if shap_contrib is None else shap_contrib.set_index("feature")["shap"].to_dict()
 
     def _lean_colors(data: pd.DataFrame) -> pd.DataFrame:
         styles = pd.DataFrame("", index=data.index, columns=data.columns)
         for col in heatmap_cols:
-            stat = col_to_stat[col]
-            for var_label in data.index:
-                code = var_to_code.get(var_label)
-                feat = f"{code}_{stat}" if code else None
-                if not feat or feat not in ref:
-                    continue
-                lo, hi = ref[feat]  # (정상 중앙값, 불량 중앙값)
-                v = data.loc[var_label, col]
-                t = 0.5 if hi == lo else (v - lo) / (hi - lo)
-                styles.loc[var_label, col] = f"background-color: {_lean_hex(t)}"
+            for label in data.index:
+                value = contributions.get(f"{var_to_code.get(label)}_{col_to_stat[col]}")
+                if value is None or pd.isna(value) or value == 0:
+                    bg, fg = "#f1f5f9", "#64748b"
+                elif value > 0:
+                    bg, fg = "#fff1f2", "#b91c1c"
+                else:
+                    bg, fg = "#eff6ff", "#1d4ed8"
+                styles.loc[label, col] = f"background-color:{bg};color:{fg};font-weight:600"
         return styles
 
     styled = (
@@ -241,7 +221,7 @@ def _render_variable_table(var_table: pd.DataFrame) -> None:
         .format(fmt)
         .set_table_styles([
             {"selector": "th.row_heading", "props": [
-                ("background-color", "#dcece2"), ("color", "#14532d"),
+                ("background-color", "#f8fafc"), ("color", "#243b5b"),
                 ("font-weight", "700"),
             ]},
             {"selector": "th.col_heading", "props": [
@@ -257,12 +237,28 @@ def _render_variable_table(var_table: pd.DataFrame) -> None:
         r'(<thead>\s*<tr>\s*<th\b[^>]*>).*?(</th>)',
         r'\1변수\2', table_html, count=1, flags=re.S,
     )
+    from html import escape
+    iqr_help = (
+        "IQR(가운데 50%의 값 범위)은 측정값을 작은 순서로 정렬했을 때 "
+        "아래 25% 지점과 위 75% 지점 사이의 차이입니다. "
+        "값이 작으면 대부분의 측정값이 서로 가까이 모여 있고, 크면 퍼져 있다는 뜻입니다. "
+        "예: 온도의 두 지점이 41℃와 43℃이면 IQR은 2℃입니다. "
+        "단위는 해당 변수와 같으며(pH, ℃, V), 평균값이나 이탈률이 아닙니다. "
+        "이 값만으로 정상·불량을 판단하지 않습니다."
+    )
+    iqr_tip = '<span class="stat-help" tabindex="0" aria-label="' + escape(iqr_help, quote=True) + '">?<span role="tooltip">' + escape(iqr_help) + '</span></span>'
+    table_html = re.sub(r'(<th\b[^>]*>)IQR(</th>)', lambda m: m[1] + 'IQR ' + iqr_tip + m[2], table_html, count=1)
     st.html(
-        '<style>' 
-        '.lot-stats-table{width:100%;max-width:640px;box-sizing:border-box;}'
-        '.lot-stats-table table{font-size:14px;color:#172b4d;}'
-        '.lot-stats-table th,.lot-stats-table td{padding:10px 12px;border:1px solid #dce3ed;box-sizing:border-box;overflow-wrap:anywhere;}'
+        '<style>'
+        '.stat-help{position:relative;display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border:1px solid #b8c9e1;border-radius:50%;font-size:11px;color:#607695;cursor:help;}'
+        '.stat-help>span{display:none;position:absolute;top:24px;right:0;width:250px;max-width:65vw;padding:12px;background:#172b4d;color:white;border-radius:8px;z-index:100;text-align:left;white-space:normal;font-size:13px;font-weight:400;line-height:1.6;}'
+        '.stat-help:hover>span,.stat-help:focus>span{display:block;}'
+        '.lot-stats-table{width:100%;box-sizing:border-box;}'
+        '.lot-stats-table table{font-family:inherit;font-size:15px;color:#172b4d;}'
+        '.lot-stats-table th,.lot-stats-table td{padding:10px 12px;border:1px solid #dce3ed;box-sizing:border-box;overflow-wrap:anywhere;vertical-align:middle;}'
         '.lot-stats-table th{text-align:left;}'
+        '.lot-stats-table thead th{height:44px;line-height:20px;font-size:13px;font-weight:600;text-align:center;}.lot-stats-table thead th:first-child{text-align:left;}'
+        '.lot-stats-table tbody th,.lot-stats-table tbody td{height:56px;line-height:20px;}'
         '.lot-stats-table td{text-align:right;font-variant-numeric:tabular-nums;}'
         '.lot-stats-table tr>*:first-child{width:22%;}'
         '.lot-stats-table tr>*:not(:first-child){width:26%;}'
@@ -270,16 +266,54 @@ def _render_variable_table(var_table: pd.DataFrame) -> None:
     )
 
 
-def _render_deviation_rates(var_table: pd.DataFrame) -> None:
-    """이탈률(%)만 변수별 진행바로 따로 표시. LOT 하나(그 자체의 시계열) 안에서
-    측정값이 기준을 벗어난 비율이라는 걸 캡션으로 같이 안내한다."""
-    st.caption("이탈률 — 이 LOT 자체 측정값 중 기준을 벗어난 비율")
+def _render_deviation_rates(var_table: pd.DataFrame, shap_contrib=None) -> None:
+    from html import escape
+    st.markdown("변수별 이탈률", help=(
+        "이탈률은 이 LOT에서 측정값이 정해 둔 기준을 벗어난 비율(%)입니다. "
+        "계산: 기준을 벗어난 측정 횟수 ÷ 전체 측정 횟수 × 100. "
+        "예: 100번 측정 중 5번이 기준을 벗어나면 5%입니다. "
+        "현재 표시 기준은 pH 2.2 초과, 온도 40℃ 미만, 전압 15V 미만이며 경계값 자체는 제외합니다. "
+        "불량 제품 비율이나 이탈 지속시간의 비율이 아닙니다. "
+        "숫자와 막대 길이는 이 비율을, 색상은 별도 모델 이탈률 피처의 SHAP 방향을 나타냅니다. "
+        "상단 관리이탈율 KPI의 계산 기준과도 다릅니다."
+    ))
+    rows = []
     for _, row in var_table.iterrows():
-        c1, c2 = st.columns([1, 1.4], gap="small")
-        with c1:
-            st.write(f"**{row['변수']}** ({row['방향']})")
-        with c2:
-            st.progress(min(row["이탈률(%)"] / 100, 1.0), text=f"{row['이탈률(%)']}%")
+        code = {"pH": "pH", "온도": "Temp", "전압": "Voltage"}.get(row["변수"])
+        contribution = None
+        if shap_contrib is not None:
+            matched = shap_contrib[shap_contrib["feature"] == f"{code}_exc_high_rate"]
+            if not matched.empty and pd.notna(matched.iloc[0]["shap"]):
+                contribution = float(matched.iloc[0]["shap"])
+        color = "#64748b" if contribution is None or contribution == 0 else "#dc2626" if contribution > 0 else "#2563eb"
+        status = "확인 불가" if contribution is None else "중립" if contribution == 0 else "불량 방향" if contribution > 0 else "정상 방향"
+        tip = (f"표시 비율: {row['방향']}. LOT 전체 측정값 기준. "
+               "색상은 모델의 별도 상한 초과 비율 피처의 SHAP 방향이며 표시 비율 자체의 영향이 아닙니다. "
+               "온도·전압의 표시 비율은 하한 미만 기준입니다. "
+               + (f"SHAP: {contribution:+.2f}" if contribution is not None else "SHAP 확인 불가"))
+        rate = float(row["이탈률(%)"])
+        width = 0 if pd.isna(rate) else min(max(rate,0),100)
+        value = "—" if pd.isna(rate) else f"{rate:.1f}%"
+        rows.append(
+            f'<div class="dr-row"><div class="dr-name">{escape(str(row["변수"]))} '
+            f'<span class="dr-help" tabindex="0" aria-label="{escape(tip,quote=True)}">?<span>{escape(tip)}</span></span></div>'
+            f'<div class="dr-track" role="progressbar" aria-label="현장 기준 이탈률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{width}">'
+            f'<div style="width:{width}%;background:{color}"></div></div>'
+            f'<div class="dr-value" style="color:{color}">{value}</div>'
+            f'<div class="dr-status" style="color:{color}">{status}</div></div>'
+        )
+    st.html("""<style>
+    .dr-panel{border:1px solid #dce3ed;border-radius:10px;background:white;color:#172b4d;font-family:inherit;font-size:15px;}
+    .dr-head,.dr-row{display:grid;grid-template-columns:72px minmax(50px,1fr) 62px 74px;gap:12px;align-items:center;padding:0 14px;box-sizing:border-box;}
+    .dr-head{height:44px;background:#f0f3f1;border-radius:10px 10px 0 0;font-weight:600;font-size:13px;color:#374151;}
+    .dr-row{height:56px;border-top:1px solid #dce3ed;}
+    .dr-name,.dr-value{font-weight:700;}.dr-value{text-align:right;font-variant-numeric:tabular-nums;}
+    .dr-status{font-size:12px;text-align:right;}.dr-track{height:8px;background:#e8eef7;border-radius:5px;overflow:hidden;}.dr-track>div{height:100%;}
+    .dr-help{position:relative;display:inline-flex;align-items:center;justify-content:center;border:1px solid #b8c9e1;border-radius:50%;width:15px;height:15px;color:#607695;font-size:11px;cursor:help;}
+    .dr-help>span{display:none;position:absolute;bottom:24px;left:-30px;width:230px;padding:12px;background:#172b4d;color:white;border-radius:8px;font-weight:400;line-height:1.6;z-index:99;}
+    .dr-help:hover>span,.dr-help:focus>span{display:block;}
+    @media(max-width:640px){.dr-head,.dr-row{grid-template-columns:58px minmax(35px,1fr) 48px 60px;gap:6px;padding:0 8px;}}
+    </style><div class="dr-panel"><div class="dr-head"><span>변수</span><span>이탈 비율</span><span style="text-align:right">이탈률</span><span style="text-align:right">SHAP</span></div>""" + ''.join(rows) + '</div>')
 
 
 def _control_chart_options() -> dict:
@@ -315,7 +349,7 @@ if "page" not in st.session_state:
 # "보기 선택"(view_mode) 토글은 폐지 — 튜터 피드백으로 한 화면에 정보가 너무 많다는
 # 지적을 반영해, 본문 상단에 크롬 탭 스타일 탭바(sensor_tab)로 재구성함(2026-09).
 # 이전 로트 분석 탭을 보고 있던 세션도 통합 화면으로 이동한다.
-if st.session_state.get("sensor_tab") not in ("데이터", "모델·인사이트"):
+if st.session_state.get("sensor_tab") not in ("데이터", "모델"):
     st.session_state.sensor_tab = "데이터"
 
 # 갤러리에서 "조회" 버튼을 누르면 위젯이 이미 그려진 뒤라 session_state를
@@ -431,7 +465,7 @@ if st.session_state.page == "🧪 센서 데이터":
     # 조회와 진행 분석은 데이터 화면에서 연결한다.
     st.segmented_control(
         "탭 선택",
-        ["데이터", "모델·인사이트"],
+        ["데이터", "모델"],
         label_visibility="collapsed",
         key="sensor_tab",
         required=True,
@@ -569,7 +603,81 @@ if st.session_state.page == "🧪 센서 데이터":
                                 width="stretch",
                             )
 
-    elif st.session_state.sensor_tab == "모델·인사이트":
+                with st.expander("조회 기간 전체 관리이탈 상세 목록 · 펼쳐보기", expanded=False):
+                    st.caption("조회 기간의 KPI에 포함된 측정점입니다. 동일 측정점이 두 조건에 해당해도 한 번만 셉니다. 관리이탈은 제품 불량 판정과 별개입니다.")
+                    detail_variable = st.radio("확인할 변수", ["pH", "온도", "전압"], horizontal=True, key="ooc_detail_variable")
+                    ooc_details = md.get_out_of_control_details(timeseries, start_d, end_d)
+                    variable_details = ooc_details[ooc_details["변수"] == detail_variable]
+                    period_points = len(timeseries[(timeseries["Date"] >= start_d) & (timeseries["Date"] <= end_d)])
+                    affected_lots = len(variable_details[["날짜", "LOT"]].drop_duplicates())
+                    st.markdown(f"**{detail_variable} 관리이탈율 {_fmt(ooc.get(detail_variable), '%')}** · 전체 측정 {period_points:,}점 중 **{len(variable_details):,}점** · 해당 LOT **{affected_lots:,}개**")
+                    if variable_details.empty:
+                        st.info("선택한 조회 기간에 이 변수의 관리이탈 측정점이 없습니다.")
+                    else:
+                        st.dataframe(
+                            variable_details.drop(columns="변수"), hide_index=True, width="stretch",
+                            height=min(420, 38 + 35 * len(variable_details)),
+                            column_config={"측정값": st.column_config.NumberColumn(format="%.2f"),
+                                           "측정 시각": st.column_config.DatetimeColumn(format="YYYY-MM-DD HH:mm:ss")},
+                        )
+                    st.caption("기준선 밖: 관리 기준선(±3σ)을 벗어난 측정점. 한쪽 치우침: 최근 3점 중 2점 이상이 같은 방향으로 중심에서 멀어진 경우(±2σ), 해당 판정 시점을 표시합니다.")
+
+
+                lot_df = sd.get_lot_subset(df, lot_date, lot_slot)
+                final_oof = md.get_final_oof(lot_summary, lot_date, lot_slot)
+                st.caption("AI 자동 리포트는 선택 LOT의 전체 측정 기록을 기준으로 합니다.")
+                lot_nelson = md.get_lot_nelson_violations(lot_ts)
+                st.markdown('<div class="section-gap" aria-hidden="true"></div>', unsafe_allow_html=True)
+                st.subheader("AI 자동 리포트")
+                report_end = st.session_state.get("period", (None, df["date"].max()))[1]
+                report_start = pd.Timestamp(report_end).date() - pd.Timedelta(days=6)
+                st.caption(f"최근 7일: {report_start} ~ {report_end} · 선택 LOT: {lot_label}")
+                report_key = f"ai_operator_v6_{report_end}_{lot_date}_{lot_slot}"
+                if st.button("AI 자동 리포트", key="ai_operator_generate"):
+                    with st.spinner("AI 자동 리포트 작성 중..."):
+                        report_stage = "보고서 데이터 계산"
+                        try:
+                            context = ai_report.build_operator_context(timeseries, report_end, lot_ts, ref_stats)
+                            recent_nelson = md.get_period_nelson_violations(timeseries, pd.Timestamp(report_start).date(), report_end)
+                            shap_contrib = None
+                            try:
+                                shap_contrib = md.get_shap_contributions(lot_df)
+                            except Exception:
+                                pass
+                            report_stage = "AI 보고서 생성"
+                            st.session_state[report_key] = ai_report.generate_operator_report(lot_label, lot_nelson, final_oof, context, recent_nelson, shap_contrib)
+                        except Exception as exc:
+                            error_type = type(exc).__name__
+                            hints = {
+                                "AuthenticationError": "OpenAI 인증에 실패했습니다. Cloud Secrets의 OPENAI_API_KEY를 확인해주세요.",
+                                "RateLimitError": "API 사용 한도 또는 호출 제한에 걸렸습니다. OpenAI API 잔액·사용 한도를 확인해주세요.",
+                                "APIConnectionError": "OpenAI 서버에 연결하지 못했습니다. 잠시 후 다시 시도해주세요.",
+                                "APITimeoutError": "OpenAI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.",
+                                "PermissionDeniedError": "OpenAI 프로젝트 또는 모델 사용 권한을 확인해주세요.",
+                                "NotFoundError": "요청한 OpenAI 모델의 사용 가능 여부를 확인해주세요.",
+                                "BadRequestError": "OpenAI 요청 형식 또는 입력 크기를 확인해야 합니다.",
+                                "ModuleNotFoundError": "Cloud에 필요한 패키지가 설치되지 않았습니다. requirements.txt와 빌드 로그를 확인해주세요.",
+                            }
+                            if isinstance(exc, RuntimeError) and str(exc).startswith("OPENAI_API_KEY가 설정되어 있지 않습니다"):
+                                hint = 'Cloud 앱 Settings → Secrets에 OPENAI_API_KEY = "발급받은 키"를 설정해주세요.'
+                            else:
+                                hint = hints.get(error_type, "프로그램 처리 중 오류가 발생했습니다. 아래 진단 정보를 전달해주세요.")
+                            st.error(f"{report_stage}에 실패했습니다. {hint}")
+                            # 예외 원문에는 인증 정보나 요청 데이터가 포함될 수 있어 표시하지 않는다.
+                            import traceback
+                            frames = traceback.extract_tb(exc.__traceback__)
+                            locations = " → ".join(
+                                f"{frame.name}:{frame.lineno}" for frame in frames
+                                if frame.filename.replace("\\", "/").rsplit("/", 1)[-1] in ("app.py", "ai_report.py")
+                            )
+                            st.caption(f"진단 정보: {report_stage} / {error_type} / {locations}")
+                if st.session_state.get(report_key):
+                    st.markdown(st.session_state[report_key])
+                else:
+                    st.caption("이번 LOT에서 반복된 문제와 먼저 확인할 기록을 쉬운 말로 정리합니다. 최근 7일 현황은 참고 근거로 함께 제공합니다.")
+                st.caption("AI 보고서는 점검 참고용입니다. 실제 조치는 현장 절차와 담당자 확인에 따릅니다.")
+
+    elif st.session_state.sensor_tab == "모델":
         # "모델" 탭과 "인사이트" 탭을 결국 하나로 합치기로 함(요청 반영, 2026-09) —
         # 파생변수 표를 규칙기반 인사이트·SHAP이 그대로 근거로 쓰기 때문에 나눠두면
         # 탭을 오가며 봐야 해서 오히려 불편하다는 점을 감안함.
@@ -606,10 +714,13 @@ if st.session_state.page == "🧪 센서 데이터":
                     )
                     _kpi_card(
                         fc2, "위험 순위", top_label, key="kpi-risk-rank",
+                        warning=bool(pct >= 0.95),
                         help=(
                             "실제 불량 확률이 아니라, 정상 데이터 대비 상대적 위험 순위입니다.\n\n"
                             "예: **상위 1% 이내**는 지금까지 본 정상 LOT들 중 위험도가 가장 높은 "
-                            "1% 안에 든다는 뜻이며, 숫자가 작을수록(상위일수록) 더 위험합니다."
+                            "1% 안에 든다는 뜻이며, 숫자가 작을수록(상위일수록) 더 위험합니다.\n\n"
+                            "색상: 상위 5% 이내는 붉은색, 그 밖은 파란색입니다. "
+                            "색상은 점검을 위한 경고 신호이며, 모델의 불량 판정 기준과는 별개입니다."
                         ),
                     )
                     _kpi_card(fc3, "실제 결과", final_oof["actual_label"], key="kpi-actual-label")
@@ -641,12 +752,20 @@ if st.session_state.page == "🧪 센서 데이터":
                 var_table_shown = var_table[var_table["변수"].map(show_vars).fillna(True)]
                 st.markdown('<div class="section-gap" aria-hidden="true"></div>', unsafe_allow_html=True)
                 st.markdown(f"**주요변수 파생변수 — {lot_label} (모델 학습 사용 지표)**")
-                table_col, rates_col = st.columns([1.15, 1], gap="large")
+                st.markdown("**공통 색상 기준 · SHAP**", help="표의 각 통계 피처와 오른쪽 이탈률 피처의 SHAP 부호로 색을 구분합니다. 색의 진하기는 영향 크기를 뜻하지 않으며 실제 불량 판정과는 별개입니다.")
+                st.html('<div style="font-size:13px;margin-bottom:8px"><span style="color:#b91c1c">● 빨강 · 불량 방향</span> &nbsp; <span style="color:#1d4ed8">● 파랑 · 정상 방향</span> &nbsp; <span style="color:#64748b">● 회색 · 중립/확인 불가</span></div>')
+                st.caption("오른쪽 비율은 현장 기준, 색상은 모델의 별도 이탈률 기준입니다. 계산 기준은 변수 옆 ?에서 확인하세요.")
+                model_shap = None
+                try:
+                    model_shap = md.get_shap_contributions(lot_df)
+                except Exception:
+                    pass
+                table_col, rates_col = st.columns([1.15, 1], gap="medium")
                 with table_col:
-                    st.caption("주요변수 통계")
-                    _render_variable_table(var_table_shown)
+                    st.markdown("주요변수 통계")
+                    _render_variable_table(var_table_shown, model_shap)
                 with rates_col:
-                    _render_deviation_rates(var_table_shown)
+                    _render_deviation_rates(var_table_shown, model_shap)
 
                 # 인사이트: 기존엔 이탈률 기준 규칙기반 문장이었는데, SHAP이 이탈률을
                 # 포함한 12개 피처 전부를 이미 반영하고 실제 모델 근거와 더 일치해서
@@ -663,7 +782,7 @@ if st.session_state.page == "🧪 센서 데이터":
                 )
                 shap_contrib = None
                 try:
-                    shap_contrib = md.get_shap_contributions(lot_df)
+                    shap_contrib = model_shap if model_shap is not None else md.get_shap_contributions(lot_df)
                     cross = ia.control_crosscheck(shap_contrib, lot_ts, ref_stats)
                     st.markdown("**핵심 요약**")
                     st.markdown(ia.direction_summary(shap_contrib))
@@ -683,7 +802,7 @@ if st.session_state.page == "🧪 센서 데이터":
                         details = details.rename(columns={"label":"판정 근거 항목", "value":"피처 값(모델 입력 단위)", "shap":"SHAP 기여도"})
                         st.dataframe(details, hide_index=True, width="stretch")
                         st.caption("전체 피처를 표시하며, 기여도는 백분율이 아닙니다. SHAP 영향 순위는 점검 우선순위와 다릅니다.")
-                        st.caption("SHAP은 배포된 XGBoost 모델의 설명입니다. 상단 모델 판정은 별도 OOF 검증 결과이므로 해당 OOF 판정의 직접 설명은 아닙니다.")
+                        st.caption("SHAP은 배포된 XGBoost 모델의 설명입니다. 모델 탭의 판정은 별도 OOF 검증 결과이므로 해당 OOF 판정의 직접 설명은 아닙니다.")
                 except Exception:
                     _notice(
                         "SHAP 인사이트를 계산할 모델 파일을 찾을 수 없어 이 섹션은 건너뜁니다.",
@@ -691,31 +810,12 @@ if st.session_state.page == "🧪 센서 데이터":
                     )
 
 
-                lot_nelson = md.get_lot_nelson_violations(lot_ts)
-                st.markdown('<div class="section-gap" aria-hidden="true"></div>', unsafe_allow_html=True)
-                st.subheader("AI 자동 리포트")
-                report_end = st.session_state.get("period", (None, df["date"].max()))[1]
-                report_start = pd.Timestamp(report_end).date() - pd.Timedelta(days=6)
-                st.caption(f"최근 7일: {report_start} ~ {report_end} · 선택 LOT: {lot_label}")
-                report_key = f"ai_operator_v6_{report_end}_{lot_date}_{lot_slot}"
-                if st.button("AI 자동 리포트", key="ai_operator_generate"):
-                    with st.spinner("AI 자동 리포트 작성 중..."):
-                        try:
-                            context = ai_report.build_operator_context(timeseries, report_end, lot_ts, ref_stats)
-                            recent_nelson = md.get_period_nelson_violations(timeseries, pd.Timestamp(report_start).date(), report_end)
-                            st.session_state[report_key] = ai_report.generate_operator_report(lot_label, lot_nelson, final_oof, context, recent_nelson, shap_contrib)
-                        except Exception:
-                            st.error("보고서를 생성하지 못했습니다. API 키와 연결 상태를 확인한 뒤 다시 시도해주세요.")
-                if st.session_state.get(report_key):
-                    st.markdown(st.session_state[report_key])
-                else:
-                    st.caption("이번 LOT에서 반복된 문제와 먼저 확인할 기록을 쉬운 말로 정리합니다. 최근 7일 현황은 참고 근거로 함께 제공합니다.")
-                st.caption("AI 보고서는 점검 참고용입니다. 실제 조치는 현장 절차와 담당자 확인에 따릅니다.")
+
             else:
                 st.warning("해당 LOT의 시계열 데이터가 없습니다.")
         else:
             if lot_label == "전체":
-                st.info("특정 LOT을 선택하면 모델 판정·인사이트를 볼 수 있습니다.")
+                st.info("특정 LOT을 선택하면 모델 판정과 파생변수를 볼 수 있습니다.")
             else:
                 st.warning("사이드바에서 LOT을 선택해주세요.")
 else:
