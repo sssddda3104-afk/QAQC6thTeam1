@@ -9,3 +9,6 @@ torch
 torchvision
 Pillow
 grad-cam
+
+python-docx>=1.1,<2
+markdown-it-py>=3,<5

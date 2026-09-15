@@ -63,6 +63,99 @@ _loading_slot.markdown(
 _loading_slot.empty()
 
 
+CHART_FONT = 'Pretendard, Noto Sans KR, Malgun Gothic, sans-serif'
+
+
+def _render_chart(chart, **kwargs):
+    """Canvas/SVG 그래프에도 본문과 동일한 글꼴 순서를 명시한다."""
+    chart = (chart.configure(font=CHART_FONT)
+             .configure_axis(labelFont=CHART_FONT, titleFont=CHART_FONT,
+                             labelFontSize=12, titleFontSize=13, titleFontWeight=600)
+             .configure_legend(labelFont=CHART_FONT, titleFont=CHART_FONT,
+                               labelFontSize=12, titleFontSize=13)
+             .configure_title(font=CHART_FONT, fontSize=16, fontWeight=600)
+             .configure_text(font=CHART_FONT, fontSize=12)
+             .configure_header(labelFont=CHART_FONT, titleFont=CHART_FONT))
+    return st.altair_chart(chart, **kwargs)
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def _report_document(text, title, metadata):
+    from report_export import build_report_docx
+    return build_report_docx(text, title, metadata)
+
+
+def _report_download(text, title, lot_label, period_label, cache_key, filename):
+    metadata = {"선택 LOT": lot_label, "분석 기간": period_label,
+                "생성 시각 한국시간": st.session_state.get(cache_key + "_created", "기존 세션 보고서"),
+                "문서 범위": "화면에 표시된 AI 리포트 본문이며 그래프는 포함하지 않습니다"}
+    try:
+        data = _report_document(text, title, metadata)
+        st.download_button("Word 문서 다운로드 (.docx)", data=data, file_name=filename,
+                           mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                           key=cache_key + "_download", on_click="ignore")
+    except ImportError:
+        st.warning("Word 내보내기에 필요한 패키지가 없습니다. requirements.txt를 설치한 뒤 앱을 재시작해주세요.")
+    except Exception as exc:
+        st.warning(f"리포트는 생성됐지만 Word 문서 변환에 실패했습니다. 진단 정보: {type(exc).__name__}")
+
+
+# Notebook saved output snapshot; do not reinterpret as all candidate features.
+SAVED_EDA_COMPARISONS = [{'Feature': 'Temp_rate_std', 'Normal_Median': 0.408388, 'Defect_Median': 0.535383, 'Cliffs_Delta': 0.86115, 'Abs_Cliffs_Delta': 0.86115, 'U_Statistic': 6005.0, 'P_Value': 9e-06, 'FDR': 0.000524, 'Effect_Size': 'Large'}, {'Feature': 'Temp_std', 'Normal_Median': 1.422641, 'Defect_Median': 1.910682, 'Cliffs_Delta': 0.828607, 'Abs_Cliffs_Delta': 0.828607, 'U_Statistic': 5900.0, 'P_Value': 1.9e-05, 'FDR': 0.000524, 'Effect_Size': 'Large'}, {'Feature': 'Temp_Max_Deviation', 'Normal_Median': 0.569376, 'Defect_Median': 4.027756, 'Cliffs_Delta': 0.818379, 'Abs_Cliffs_Delta': 0.818379, 'U_Statistic': 5867.0, 'P_Value': 2.4e-05, 'FDR': 0.000524, 'Effect_Size': 'Large'}, {'Feature': 'pH_std', 'Normal_Median': 0.120056, 'Defect_Median': 0.144042, 'Cliffs_Delta': 0.797923, 'Abs_Cliffs_Delta': 0.797923, 'U_Statistic': 5801.0, 'P_Value': 3.8e-05, 'FDR': 0.000624, 'Effect_Size': 'Large'}, {'Feature': 'Overall_Deviation_Rate', 'Normal_Median': 9.90099, 'Defect_Median': 15.181518, 'Cliffs_Delta': 0.776848, 'Abs_Cliffs_Delta': 0.776848, 'U_Statistic': 5733.0, 'P_Value': 6.1e-05, 'FDR': 0.000787, 'Effect_Size': 'Large'}, {'Feature': 'Temp_mean_abs_rate', 'Normal_Median': 0.329778, 'Defect_Median': 0.390997, 'Cliffs_Delta': 0.737177, 'Abs_Cliffs_Delta': 0.737177, 'U_Statistic': 5605.0, 'P_Value': 0.000143, 'FDR': 0.00127, 'Effect_Size': 'Large'}, {'Feature': 'Temp_range', 'Normal_Median': 4.9, 'Defect_Median': 9.51, 'Cliffs_Delta': 0.733612, 'Abs_Cliffs_Delta': 0.733612, 'U_Statistic': 5593.5, 'P_Value': 0.000154, 'FDR': 0.00127, 'Effect_Size': 'Large'}, {'Feature': 'Temp_max_abs_rate', 'Normal_Median': 0.906, 'Defect_Median': 1.772, 'Cliffs_Delta': 0.732837, 'Abs_Cliffs_Delta': 0.732837, 'U_Statistic': 5591.0, 'P_Value': 0.000156, 'FDR': 0.00127, 'Effect_Size': 'Large'}, {'Feature': 'Temp_min', 'Normal_Median': 40.03, 'Defect_Median': 35.43, 'Cliffs_Delta': -0.711607, 'Abs_Cliffs_Delta': 0.711607, 'U_Statistic': 930.5, 'P_Value': 0.000238, 'FDR': 0.001588, 'Effect_Size': 'Large'}, {'Feature': 'pH_Deviation_Rate', 'Normal_Median': 9.90099, 'Defect_Median': 16.831683, 'Cliffs_Delta': 0.708818, 'Abs_Cliffs_Delta': 0.708818, 'U_Statistic': 5513.5, 'P_Value': 0.000244, 'FDR': 0.001588, 'Effect_Size': 'Large'}, {'Feature': 'pH_range', 'Normal_Median': 0.48, 'Defect_Median': 0.64, 'Cliffs_Delta': 0.676894, 'Abs_Cliffs_Delta': 0.676894, 'U_Statistic': 5410.5, 'P_Value': 0.000444, 'FDR': 0.002624, 'Effect_Size': 'Large'}, {'Feature': 'pH_Max_Deviation', 'Normal_Median': 0.088935, 'Defect_Median': 0.23, 'Cliffs_Delta': 0.665892, 'Abs_Cliffs_Delta': 0.665892, 'U_Statistic': 5375.0, 'P_Value': 0.000592, 'FDR': 0.002958, 'Effect_Size': 'Large'}, {'Feature': 'pH_max', 'Normal_Median': 2.29, 'Defect_Median': 2.45, 'Cliffs_Delta': 0.664187, 'Abs_Cliffs_Delta': 0.664187, 'U_Statistic': 5369.5, 'P_Value': 0.000521, 'FDR': 0.002821, 'Effect_Size': 'Large'}, {'Feature': 'pH_rate_std', 'Normal_Median': 0.034075, 'Defect_Median': 0.038686, 'Cliffs_Delta': 0.660933, 'Abs_Cliffs_Delta': 0.660933, 'U_Statistic': 5359.0, 'P_Value': 0.00065, 'FDR': 0.003018, 'Effect_Size': 'Large'}, {'Feature': 'pH_max_abs_rate', 'Normal_Median': 0.076, 'Defect_Median': 0.106, 'Cliffs_Delta': 0.616767, 'Abs_Cliffs_Delta': 0.616767, 'U_Statistic': 5216.5, 'P_Value': 0.001457, 'FDR': 0.006313, 'Effect_Size': 'Large'}, {'Feature': 'pH_middle_mean', 'Normal_Median': 2.006087, 'Defect_Median': 2.036957, 'Cliffs_Delta': 0.601426, 'Abs_Cliffs_Delta': 0.601426, 'U_Statistic': 5167.0, 'P_Value': 0.001917, 'FDR': 0.007789, 'Effect_Size': 'Large'}, {'Feature': 'pH_mean_abs_rate', 'Normal_Median': 0.027383, 'Defect_Median': 0.0317, 'Cliffs_Delta': 0.593677, 'Abs_Cliffs_Delta': 0.593677, 'U_Statistic': 5142.0, 'P_Value': 0.002193, 'FDR': 0.008386, 'Effect_Size': 'Large'}, {'Feature': 'pH_mean', 'Normal_Median': 2.007101, 'Defect_Median': 2.028551, 'Cliffs_Delta': 0.555711, 'Abs_Cliffs_Delta': 0.555711, 'U_Statistic': 5019.5, 'P_Value': 0.004146, 'FDR': 0.014972, 'Effect_Size': 'Large'}, {'Feature': 'Voltage_Max_Deviation', 'Normal_Median': 0.586617, 'Defect_Median': 2.106868, 'Cliffs_Delta': 0.541299, 'Abs_Cliffs_Delta': 0.541299, 'U_Statistic': 4973.0, 'P_Value': 0.005231, 'FDR': 0.017895, 'Effect_Size': 'Large'}, {'Feature': 'Temp_Deviation_Rate', 'Normal_Median': 9.90099, 'Defect_Median': 13.861386, 'Cliffs_Delta': 0.524097, 'Abs_Cliffs_Delta': 0.524097, 'U_Statistic': 4917.5, 'P_Value': 0.006657, 'FDR': 0.021634, 'Effect_Size': 'Large'}, {'Feature': 'Voltage_min', 'Normal_Median': 15.03, 'Defect_Median': 13.09, 'Cliffs_Delta': -0.496048, 'Abs_Cliffs_Delta': 0.496048, 'U_Statistic': 1626.0, 'P_Value': 0.010458, 'FDR': 0.03222, 'Effect_Size': 'Large'}, {'Feature': 'Voltage_range', 'Normal_Median': 4.91, 'Defect_Median': 6.75, 'Cliffs_Delta': 0.492174, 'Abs_Cliffs_Delta': 0.492174, 'U_Statistic': 4814.5, 'P_Value': 0.011115, 'FDR': 0.03222, 'Effect_Size': 'Large'}, {'Feature': 'Voltage_std', 'Normal_Median': 1.42151, 'Defect_Median': 1.558004, 'Cliffs_Delta': 0.49047, 'Abs_Cliffs_Delta': 0.49047, 'U_Statistic': 4809.0, 'P_Value': 0.011401, 'FDR': 0.03222, 'Effect_Size': 'Large'}, {'Feature': 'pH_median', 'Normal_Median': 2.0, 'Defect_Median': 2.02, 'Cliffs_Delta': 0.430807, 'Abs_Cliffs_Delta': 0.430807, 'U_Statistic': 4616.5, 'P_Value': 0.025076, 'FDR': 0.067913, 'Effect_Size': 'Medium'}, {'Feature': 'Voltage_early_mean', 'Normal_Median': 17.444348, 'Defect_Median': 17.120435, 'Cliffs_Delta': -0.398264, 'Abs_Cliffs_Delta': 0.398264, 'U_Statistic': 1941.5, 'P_Value': 0.039941, 'FDR': 0.103381, 'Effect_Size': 'Medium'}]
+
+
+def _render_eda_comparison():
+    """One comparison panel for the saved EDA snapshot."""
+    from html import escape
+    suffixes = {"rate_std":"변화율 변동성", "std":"표준편차", "Max_Deviation":"최대 이탈폭",
+                "mean_abs_rate":"평균 절대 변화율", "range":"최댓값과 최솟값 차이", "max_abs_rate":"최대 절대 변화율",
+                "min":"최솟값", "Deviation_Rate":"정상범위 이탈률", "max":"최댓값",
+                "middle_mean":"중반 평균", "mean":"전체 평균", "median":"중앙값", "early_mean":"초반 평균"}
+    st.markdown('<div class="section-gap" aria-hidden="true"></div>', unsafe_allow_html=True)
+    with st.expander("정상·불량 집단 비교 · 파생변수 선정 배경", expanded=False):
+        st.markdown("**평균보다 변동성과 이탈 특성에서 집단 차이가 더 크게 나타났습니다.**")
+        mode = st.segmented_control("표시 범위", ["Top 5", "전체"], default="Top 5", required=True,
+                                    key="eda_view_mode", label_visibility="collapsed")
+        records = SAVED_EDA_COMPARISONS[:5] if mode != "전체" else SAVED_EDA_COMPARISONS
+        html_rows = []
+        for rank, row in enumerate(records, 1):
+            feature = row["Feature"]
+            if feature == "Overall_Deviation_Rate":
+                label, unit = "전체 이탈률", "%"
+            else:
+                sensor, suffix = feature.split("_", 1)
+                label = {"pH":"pH", "Temp":"온도", "Voltage":"전압"}[sensor] + " " + suffixes.get(suffix,suffix)
+                unit = "%" if suffix == "Deviation_Rate" else {"pH":"pH", "Temp":"℃", "Voltage":"V"}[sensor]
+                if suffix in ("rate_std", "mean_abs_rate", "max_abs_rate"): unit += "/초"
+            digits = 1 if unit == "%" else 3 if unit.startswith("pH") else 2
+            effect = row["Abs_Cliffs_Delta"]
+            html_rows.append(
+                f'<tr><td class="eda-rank">{rank}</td><th scope="row">{escape(label)}<small>{escape(unit)}</small></th>'
+                f'<td class="eda-normal">{row["Normal_Median"]:.{digits}f}</td>'
+                f'<td class="eda-defect">{row["Defect_Median"]:.{digits}f}</td>'
+                f'<td><div class="eda-effect"><div class="eda-track"><div style="width:{effect*100}%"></div></div><b>{effect:.2f}</b></div></td></tr>'
+            )
+        st.html("""<style>
+        .eda-scroll{max-height:410px;overflow:auto;border:1px solid #dce3ed;border-radius:10px;background:white;}
+        .eda-table{width:100%;min-width:540px;table-layout:fixed;border-collapse:separate;border-spacing:0;font-family:inherit;font-size:14px;color:#243b5b;}
+        .eda-table th,.eda-table td{padding:13px 16px;vertical-align:middle;box-sizing:border-box;border-bottom:1px solid #e7edf5;}
+        .eda-table thead th{position:sticky;top:0;z-index:1;background:#f0f4fa;font-size:13px;font-weight:650;text-align:center;height:46px;}
+        .eda-table thead th:nth-child(2){text-align:left;}
+        .eda-table tbody th{text-align:left;font-weight:600;}.eda-table tbody th small{display:block;font-size:11px;font-weight:400;color:#718198;margin-top:3px;}
+        .eda-table tbody td{text-align:center;font-variant-numeric:tabular-nums;font-weight:650;}
+        .eda-table .eda-rank{color:#8290a6;font-size:12px;font-weight:400;}
+        .eda-table .eda-normal{color:#1d4ed8;background:#f7faff;}.eda-table .eda-defect{color:#b91c1c;background:#fff8f8;}
+        .eda-effect{display:flex;align-items:center;gap:12px;}.eda-effect b{min-width:34px;text-align:right;font-weight:600;}
+        .eda-track{height:8px;background:#e8eef7;border-radius:5px;flex:1;overflow:hidden;}.eda-track>div{height:100%;background:#6788b3;}
+        .eda-table tbody tr:last-child>*{border-bottom:0;}
+        </style><div class="eda-scroll" tabindex="0" role="region" aria-label="정상 불량 변수 비교 목록"><table class="eda-table">
+        <colgroup><col style="width:6%"><col style="width:34%"><col style="width:18%"><col style="width:18%"><col style="width:24%"></colgroup>
+        <thead><tr><th>순위</th><th>변수</th><th>정상 중앙값</th><th>불량 중앙값</th><th>집단 차이 크기</th></tr></thead><tbody>""" + ''.join(html_rows) + '</tbody></table></div>')
+        st.caption("① 전체는 저장된 비교 결과 25개입니다. 정상 717·불량 9 LOT의 고정 EDA 결과이며, 기간·LOT 선택에 따라 바뀌지 않습니다.")
+        st.caption("② 정상·불량 열은 LOT별 피처의 집단 중앙값입니다. 이탈 지표는 진행률별 정상 5~95백분위 범위 기준으로, 현재 관리도·현장 이탈률 기준과 다릅니다.")
+        st.caption("③ 막대는 집단 차이 크기(|Cliff’s Delta|)이며 SHAP·불량 확률이 아닙니다. 숫자 색은 집단 구분용이며, 전체 후보나 최종 모델 입력 목록은 아닙니다.")
+
+
 def _goto_lot(date_str: str, lot_num: int) -> None:
     """"조회" 버튼(불량 발생 목록)의 on_click 콜백 — 날짜/LOT 선택자를 그 값으로 이동시킨다.
     ⚠ 반드시 on_click 콜백으로 해야 한다: 버튼을 `if st.button(...): st.session_state.sel_date = ...`
@@ -522,7 +615,7 @@ if st.session_state.page == "🧪 센서 데이터":
         with heat_col:
             st.markdown("**전체 LOT 중 불량 위치**")
             with st.container(border=True, key="heatmap-panel"):
-                st.altair_chart(
+                _render_chart(
                     ch.defect_heatmap_chart(sd.get_lot_list(period_df), st.session_state.get("selected_lot")),
                     width="stretch", key="lot_heatmap",
                     on_select=_on_heatmap_select, selection_mode=["lot_pick"]
@@ -595,7 +688,7 @@ if st.session_state.page == "🧪 센서 데이터":
                 for var_name in ["pH", "온도", "전압"]:
                     if show_vars.get(var_name, True):
                         with st.container(border=True, key=f"control-panel-{var_name}"):
-                            st.altair_chart(
+                            _render_chart(
                                 ch.variable_control_chart(
                                     lot_ts, var_name, ref_stats=ref_stats[var_name], upto=upto,
                                     **cc_opts
@@ -632,8 +725,11 @@ if st.session_state.page == "🧪 센서 데이터":
                 report_end = st.session_state.get("period", (None, df["date"].max()))[1]
                 report_start = pd.Timestamp(report_end).date() - pd.Timedelta(days=6)
                 st.caption(f"최근 7일: {report_start} ~ {report_end} · 선택 LOT: {lot_label}")
-                report_key = f"ai_operator_v6_{report_end}_{lot_date}_{lot_slot}"
-                if st.button("AI 자동 리포트", key="ai_operator_generate"):
+                report_key = f"ai_operator_v7_{report_end}_{lot_date}_{lot_slot}"
+                with st.container(horizontal=True):
+                    operator_generate = st.button("AI 자동 리포트", key="ai_operator_generate")
+                    operator_download_slot = st.container()
+                if operator_generate:
                     with st.spinner("AI 자동 리포트 작성 중..."):
                         report_stage = "보고서 데이터 계산"
                         try:
@@ -646,6 +742,7 @@ if st.session_state.page == "🧪 센서 데이터":
                                 pass
                             report_stage = "AI 보고서 생성"
                             st.session_state[report_key] = ai_report.generate_operator_report(lot_label, lot_nelson, final_oof, context, recent_nelson, shap_contrib)
+                            st.session_state[report_key + "_created"] = pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M")
                         except Exception as exc:
                             error_type = type(exc).__name__
                             hints = {
@@ -673,6 +770,10 @@ if st.session_state.page == "🧪 센서 데이터":
                             st.caption(f"진단 정보: {report_stage} / {error_type} / {locations}")
                 if st.session_state.get(report_key):
                     st.markdown(st.session_state[report_key])
+                    with operator_download_slot:
+                        _report_download(st.session_state[report_key], "크로메이트 공정 현장용 AI 리포트", lot_label,
+                                         f"{report_start} ~ {report_end} (최근 7일)", report_key,
+                                         f"현장용_AI리포트_{lot_date}_LOT{lot_slot}.docx")
                 else:
                     st.caption("이번 LOT에서 반복된 문제와 먼저 확인할 기록을 쉬운 말로 정리합니다. 최근 7일 현황은 참고 근거로 함께 제공합니다.")
                 st.caption("AI 보고서는 점검 참고용입니다. 실제 조치는 현장 절차와 담당자 확인에 따릅니다.")
@@ -744,6 +845,8 @@ if st.session_state.page == "🧪 센서 데이터":
                         kind="info",
                     )
 
+                _render_eda_comparison()
+
                 # 파생변수 표는 "모델" 얘기 쪽에 두기로 함(요청 반영, 2026-09) — 모델 판정
                 # 바로 아래에서 "이 값들 때문에 이 판정" 흐름이 자연스럽고, 아래 인사이트·SHAP도
                 # 이 표를 그대로 근거로 쓴다.
@@ -786,7 +889,7 @@ if st.session_state.page == "🧪 센서 데이터":
                     cross = ia.control_crosscheck(shap_contrib, lot_ts, ref_stats)
                     st.markdown("**핵심 요약**")
                     st.markdown(ia.direction_summary(shap_contrib))
-                    st.altair_chart(ch.shap_contribution_chart(shap_contrib), width="stretch")
+                    _render_chart(ch.shap_contribution_chart(shap_contrib), width="stretch")
                     st.caption("빨강 = 불량 방향 · 파랑 = 정상 방향 · 막대가 길수록 모델 점수에 미친 영향이 큽니다.")
                     st.markdown("**이렇게 해석할 수 있습니다**")
                     for explanation in ia.evidence_explanations(shap_contrib, cross):
@@ -820,18 +923,26 @@ if st.session_state.page == "🧪 센서 데이터":
                 analyst_digest = hashlib.sha256((ai_report.SYSTEM_PROMPT_ANALYST + json.dumps(
                     analyst_context, ensure_ascii=False, default=str, sort_keys=True)).encode()).hexdigest()[:20]
                 analyst_key = f"ai_analyst_{analyst_digest}"
-                if st.button("AI 자동 리포트 생성", key="ai_analyst_generate"):
+                with st.container(horizontal=True):
+                    analyst_generate = st.button("AI 자동 리포트 생성", key="ai_analyst_generate")
+                    analyst_download_slot = st.container()
+                if analyst_generate:
                     with st.spinner("모델 분석용 리포트 작성 중..."):
                         try:
                             report = ai_report.generate_analyst_report(analyst_context)
                             if not report:
                                 raise ValueError("Empty report")
                             st.session_state[analyst_key] = report
+                            st.session_state[analyst_key + "_created"] = pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M")
                         except Exception as exc:
                             st.error("모델 분석용 리포트를 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.")
                             st.caption(f"진단 정보: 모델 분석용 AI 리포트 / {type(exc).__name__}")
                 if st.session_state.get(analyst_key):
                     st.markdown(st.session_state[analyst_key])
+                    with analyst_download_slot:
+                        _report_download(st.session_state[analyst_key], "크로메이트 모델 분석용 AI 리포트", lot_label,
+                                         f"{st.session_state.period[0]} ~ {st.session_state.period[1]}", analyst_key,
+                                         f"모델분석_AI리포트_{lot_date}_LOT{lot_slot}.docx")
                 else:
                     st.caption("버튼을 누르면 현재 조회 기간과 선택 LOT을 기준으로 생성합니다.")
                 st.caption("OOF 판정과 배포 모델 SHAP은 서로 다른 근거이며, 리포트는 추가 검증을 위한 해석입니다.")
