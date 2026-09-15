@@ -27,8 +27,6 @@ h3 {font-size:1.15rem!important;letter-spacing:-.025em;}
 .process-layout svg {display:block;width:100%;max-height:390px;margin:0 auto;}
 .process-metrics {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;}
 @media(max-width:760px){.process-layout{grid-template-columns:1fr;gap:16px}.process-layout svg{max-height:280px}.process-metrics{gap:10px}}
-.process-track {height:6px;border-radius:10px;background:#e7eef8;overflow:hidden;}
-.process-track div {height:100%;background:#2563eb;}
 .process-note {color:#60718a;font-size:12px;line-height:1.6;margin-top:10px;}
 @media(max-width:640px){.blue-kpi{min-height:100px;padding:16px}.process-panel{padding:12px}h1{font-size:1.6rem!important}}
 
@@ -62,7 +60,6 @@ h3 {font-size:1.1rem!important;line-height:1.5!important;}
 .process-metrics {gap:12px;}
 .process-metrics .blue-kpi {min-height:108px;margin:0;padding:16px 18px;background:#f8faff;box-shadow:none;}
 .process-metrics .blue-kpi-value {font-size:27px;}
-.process-track {height:5px;}
 .process-note {margin-top:12px;font-variant-numeric:tabular-nums;}
 [data-testid="stMetricValue"] {font-variant-numeric:tabular-nums;font-weight:700;}
 @media(max-width:900px){.process-layout{grid-template-columns:1fr;gap:20px}.process-layout svg{max-height:270px}.process-panel{padding:20px}}
@@ -155,4 +152,4 @@ def process_html(progress, current=None, risk="데이터 부족", alert="—", r
 <rect x="233" y="175" width="272" height="94" fill="#73bba4" opacity=".34"/>
 <path d="M233 175H505" stroke="#4d9781" stroke-width="2"/>{bubbles}
 <path d="M231 143V271H507V143" fill="none" stroke="#7d97b0" stroke-width="4"/>
-</svg><div class="process-metrics">{cards}</div></div><div class="process-track"><div style="width:{p}%"></div></div><div class="process-note">측정 시각: {sample}{defect_note}</div></div>'''
+</svg><div class="process-metrics">{cards}</div></div><div class="process-note">측정 시각: {sample}{defect_note}</div></div>'''

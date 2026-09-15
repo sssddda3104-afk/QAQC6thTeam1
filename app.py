@@ -811,6 +811,31 @@ if st.session_state.page == "🧪 센서 데이터":
 
 
 
+                st.markdown('<div class="section-gap" aria-hidden="true"></div>', unsafe_allow_html=True)
+                st.subheader("AI 자동 리포트 · 모델 분석용")
+                st.caption("모델 설계자·데이터 분석가를 위한 검증 결과, 선택 LOT의 판단 근거, 추가 검증 과제입니다.")
+                import json
+                analyst_context = ai_report.build_analyst_context(
+                    lot_label, final_oof, model_row, lot_summary, st.session_state.period, shap_contrib)
+                analyst_digest = hashlib.sha256((ai_report.SYSTEM_PROMPT_ANALYST + json.dumps(
+                    analyst_context, ensure_ascii=False, default=str, sort_keys=True)).encode()).hexdigest()[:20]
+                analyst_key = f"ai_analyst_{analyst_digest}"
+                if st.button("AI 자동 리포트 생성", key="ai_analyst_generate"):
+                    with st.spinner("모델 분석용 리포트 작성 중..."):
+                        try:
+                            report = ai_report.generate_analyst_report(analyst_context)
+                            if not report:
+                                raise ValueError("Empty report")
+                            st.session_state[analyst_key] = report
+                        except Exception as exc:
+                            st.error("모델 분석용 리포트를 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.")
+                            st.caption(f"진단 정보: 모델 분석용 AI 리포트 / {type(exc).__name__}")
+                if st.session_state.get(analyst_key):
+                    st.markdown(st.session_state[analyst_key])
+                else:
+                    st.caption("버튼을 누르면 현재 조회 기간과 선택 LOT을 기준으로 생성합니다.")
+                st.caption("OOF 판정과 배포 모델 SHAP은 서로 다른 근거이며, 리포트는 추가 검증을 위한 해석입니다.")
+
             else:
                 st.warning("해당 LOT의 시계열 데이터가 없습니다.")
         else:
